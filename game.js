@@ -511,7 +511,8 @@ function f1CarRating(team,year=state.year){
   const base=(ratings[id]||[65,65,65,65,65])[era];
   // Crescimento industrial gradual, separado dos investimentos do piloto.
   const growth=id==='sauber'?3.25:id==='cadillac'?2.5:0;
-  return Math.min(id==='sauber'?94:id==='cadillac'?88:100,base+Math.max(0,year-2026)*growth);
+  const cycle=year>2026?Math.sin((year-2026)*1.15+(id||'').split('').reduce((a,c)=>a+c.charCodeAt(0),0)) * 4:0;
+  return clamp(base+Math.max(0,year-2026)*growth+cycle,40,id==='sauber'?94:id==='cadillac'?88:100);
 }
 function f1TeamStars(team,year=state.year){
   const rating=f1CarRating(team,year);
@@ -582,8 +583,8 @@ function strategicEvents(){
 function applyCareerChoice(event,opt,success,delta){
   const c=careerSystems(),fx=opt.effects||{};
   if(opt.prodigy){c.potential=98;careerNote('Descoberto como prodígio: potencial ampliado, sem garantia de resultados.');}
-  c.preparation=clamp(c.preparation+(fx.preparation??(opt.chance<60?-4:2)),0,100);
-  c.trust=clamp(c.trust+(fx.trust??(success?1:opt.chance<60?-3:-1)),0,100);
+  c.preparation=clamp(c.preparation+(fx.preparation??(opt.chance<60?-4:1)),0,100);
+  c.trust=clamp(c.trust+(fx.trust??(success?0:opt.chance<60?-3:-1)),0,100);
   if(fx.money)state.careerEarnings+=fx.money;
   if(fx.sponsor)c.sponsor={until:state.year+1,buyout:100000};
   if(success&&opt.later)c.pending.push({year:state.year+1,key:teamProjectKey(),...opt.later});
@@ -599,7 +600,8 @@ function startCareerSeason(){
     careerNote(effect.key===teamProjectKey()?'O investimento anterior melhorou seu carro.':'O projeto anterior evoluiu, mas você não está mais naquela equipe.');
   }
   c.pending=c.pending.filter(e=>e.year>state.year);
-  c.preparation=clamp(c.preparation+4,0,100);
+  c.preparation=clamp(c.preparation-3,0,100);
+  for(const key of Object.keys(c.projects))c.projects[key]=Math.max(0,c.projects[key]-.6);
   const existing=state.standings.find(d=>d.name===c.rival);
   c.rival=(existing||[...state.standings].sort((a,b)=>Math.abs(a.strength-state.ovr)-Math.abs(b.strength-state.ovr))[0])?.name||null;
   c.objective=state.team.role==='test'?{label:'Pontuar como piloto de teste',kind:'points',target:1}:state.category==='f1'?{label:state.team.stars>=5?'Disputar o título':state.team.stars>=4?'Terminar entre os 5 primeiros':'Terminar entre os 10 primeiros',kind:'position',target:state.team.stars>=5?1:state.team.stars>=4?5:10}:{label:'Terminar entre os 3 primeiros',kind:'position',target:3};
@@ -914,6 +916,25 @@ function bumpAttrs(attrs, delta, prodigy=false){
   const change=prodigy && delta>0 ? Math.min(delta,Math.max(0,85-state.ovr)) : adjustedGain(delta);
   Object.keys(attrs).forEach(k=>{ attrs[k] = clamp(attrs[k]+change,20,99); });
 }
+function choiceImpact(opt,success){
+  if(success)return opt.prodigy?Math.min(opt.succ,Math.max(0,85-state.ovr)):adjustedGain(opt.succ);
+  if(opt.chance>=100)return 0;
+  // Perdas não recebem o desconto aplicado aos ganhos por idade e experiência.
+  const gain=Math.max(0,opt.succ);
+  const minimum=opt.chance<60?Math.max(4,Math.ceil(gain*1.25)):opt.chance<80?Math.max(2,Math.ceil(gain*.75)):1;
+  return -Math.max(Math.abs(opt.fail||0),minimum);
+}
+function applyChoiceToAttrs(attrs,opt,success){
+  const delta=choiceImpact(opt,success);
+  for(const key of Object.keys(attrs))attrs[key]=clamp(attrs[key]+delta,20,99);
+}
+function previewChoice(opt,success){
+  const attrs={...state.attrs};applyChoiceToAttrs(attrs,opt,success);
+  const delta=computeOVR(attrs,state.style,state.category)-state.ovr;
+  return (delta>=0?'+':'')+delta;
+}
+function choiceRiskLabel(opt){return opt.chance>=100?'Sem risco':opt.chance<60?'Alto risco':opt.chance<80?'Risco moderado':'Conservadora';}
+
 function previewDelta(delta, prodigy=false){
   const attrs={...state.attrs};bumpAttrs(attrs,delta,prodigy);
   const change=computeOVR(attrs,state.style,state.category)-state.ovr;
@@ -1076,13 +1097,35 @@ function confirmCreate(){
 
 /* ---------------- Passo 2: propostas de equipe ---------------- */
 
+function eliteSeatEligible(){
+  const c=careerSystems(),years=state.yearHistory.filter(y=>y.category==='f1');
+  return state.ovr>=85&&c.trust>=60&&c.preparation>=50&&
+    (years.filter(y=>y.position<=8).length>=2||years.some(y=>y.position===1));
+}
+function exceptionalJunior(){
+  return state.yearHistory.some(y=>y.category==='f2'&&y.position===1)&&state.ovr>=80&&careerSystems().trust>=65;
+}
+function f1OfferRole(team){
+  const stars=f1TeamStars(team),hasF1=state.yearHistory.some(y=>y.category==='f1');
+  if(stars>=4&&!eliteSeatEligible())return 'test';
+  if(!hasF1)return 'second';
+  return contractRole(state.ovr,stars,'f1');
+}
+function raceAbility(){
+  if(state.category!=='f1')return state.ovr+playerCarPerformance()+(careerSystems().preparation-60)/30;
+  // Rivais já usam força combinada de piloto/carro. Mesma escala 0–100 para o jogador.
+  const c=careerSystems();
+  const adaptation=state.age===state.team.ageStart?.8:0;
+  return clamp(state.ovr*.65+f1CarRating(state.team)*.35+projectStrength()*.35+
+    (c.preparation-30)/40+(state.team.role==='first'?.4:0)-adaptation,20,99);
+}
 function generateOffers(category, tierBias){
   // tierBias: 1 = base baixa, 2 = média, 3 = alta (pra propostas melhores conforme OVR sobe)
   let pool=categoryTeams(category);
   const recent=state.yearHistory.at(-1);
-  if(category==='f1'&&recent?.category==='f1'&&recent.position>10&&state.ovr<88){
-    const accessible=pool.filter(t=>f1TeamStars(t)<=3);
-    if(accessible.length>=3)pool=accessible;
+  if(category==='f1'&&!eliteSeatEligible()){
+    const allowTest=exceptionalJunior();
+    pool=pool.filter(t=>f1TeamStars(t)<=3||(allowTest&&f1TeamStars(t)===4));
   }
   const names = shuffle(pool).slice(0,3);
   return names.map((n,i)=>{
@@ -1092,9 +1135,10 @@ function generateOffers(category, tierBias){
     const stars = category==="f1" ? f1TeamStars(n) : clamp(tierBias + rnd(0,2) + Math.round(state.ovr/40), 1, 5);
     const country = n.country;
     const weekly = Math.max(2, Math.round(marketValue(state.ovr, state.age, category)*1000*0.015*(.75+market.trust/200+form*.1) + rnd(1,6)));
-    const role = contractRole(state.ovr,stars,category);
+    const role = category==='f1'?f1OfferRole(n):contractRole(state.ovr,stars,category);
     return {
       ...n, category, stars, country,
+      reason:category!=='f1'?'Oportunidade de desenvolvimento na base':role==='test'?'Campeão da base: oportunidade para provar seu valor':eliteSeatEligible()?'Resultados na F1 e confiança justificam esta proposta':'Conquiste seu espaço na Fórmula 1',
       weekly, years: Math.min(rnd(1,3),Math.max(1,43-state.age)), role,
       raceEstimate: role==='test'?Math.min(8,seasonRaceCount(category)):seasonRaceCount(category)
     };
@@ -1105,7 +1149,7 @@ function renderOffers(offers, isTransferMidCareer){
   if(isTransferMidCareer && currentSeasonTeam()){
     const identity=currentSeasonTeam();
     offers = offers.filter(o=>o.id!==identity.id).slice(0,2);
-    offers.push({...state.team,...identity, stars:state.category==='f1'?f1TeamStars(identity):state.team.stars, years:1, role:contractRole(state.ovr,state.team.stars,state.category), renewal:true});
+    offers.push({...state.team,...identity, stars:state.category==='f1'?f1TeamStars(identity):state.team.stars, years:1, role:state.category==='f1'?f1OfferRole(identity):contractRole(state.ovr,state.team.stars,state.category), renewal:true});
   }
   const wrapId = isTransferMidCareer ? 'screen-transfer' : 'screen-offers';
   showOnly(wrapId);
@@ -1129,7 +1173,7 @@ function renderOffers(offers, isTransferMidCareer){
       <div class="offer-name">${o.name}</div>
       <div class="offer-stars" title="Competitividade do carro nesta temporada">${"★".repeat(o.stars)}${"☆".repeat(5-o.stars)}</div>
       <div class="contract-facts"><div><small>SALÁRIO SEMANAL</small><b>€${o.weekly}k</b></div><div><small>DURAÇÃO</small><b>${o.years} ano(s)</b></div></div>
-      <div class="offer-role">${contractDescription(o)}</div>${isTransferMidCareer?`<small class="salary-change">${o.weekly>=state.salaryWeek?'+':''}€${o.weekly-state.salaryWeek}k/sem em relação ao contrato atual</small>`:''}<small class="offer-consequence">${state.team&&state.team.id!==o.id&&state.team.category===o.category&&state.age<state.team.ageStart+state.team.years?'Saída antecipada: confiança −12.':o.renewal?'Continue o projeto e preserve sua evolução do carro.':'Comece um projeto nesta equipe.'}${careerSystems().sponsor&&state.team?.id!==o.id&&state.team?.category===o.category?' Patrocínio: devolução de €100k.':''}</small><span class="offer-action">${o.renewal?"Renovar contrato":"Escolher equipe"} →</span>
+      <div class="offer-role">${contractDescription(o)}</div><small class="offer-consequence">${o.renewal?'Renovação avaliada pelo seu desempenho atual':o.reason||'Oportunidade na categoria'}</small>${isTransferMidCareer?`<small class="salary-change">${o.weekly>=state.salaryWeek?'+':''}€${o.weekly-state.salaryWeek}k/sem em relação ao contrato atual</small>`:''}<small class="offer-consequence">${state.team&&state.team.id!==o.id&&state.team.category===o.category&&state.age<state.team.ageStart+state.team.years?'Saída antecipada: confiança −12.':o.renewal?'Continue o projeto e preserve sua evolução do carro.':'Comece um projeto nesta equipe.'}${careerSystems().sponsor&&state.team?.id!==o.id&&state.team?.category===o.category?' Patrocínio: devolução de €100k.':''}</small><span class="offer-action">${o.renewal?"Renovar contrato":"Escolher equipe"} →</span>
     </button>
   `).join("");
 
@@ -1400,7 +1444,7 @@ function renderRound(ev){
     const btn = document.createElement('button');
     btn.className = 'option-btn';
     btn.innerHTML = `
-      <div class="otext"><b>${opt.text}</b><span>${opt.chance}%: sucesso ${previewDelta(opt.succ,opt.prodigy)} OVR · falha ${previewDelta(opt.fail,opt.prodigy)} OVR</span></div>
+      <div class="otext"><b>${opt.text}</b><span>${choiceRiskLabel(opt)} · ${opt.chance}%: sucesso ${previewChoice(opt,true)} OVR · falha ${previewChoice(opt,false)} OVR</span></div>
       <div class="probability"><div class="prob-labels"><span>${opt.chance}% sucesso</span><span>${100-opt.chance}% falha</span></div><div class="pctbar" aria-hidden="true"><div class="succ" style="width:${opt.chance}%"></div><div class="fai" style="width:${100-opt.chance}%"></div></div></div>
     `;
     btn.onclick = ()=> resolveOption(opt);
@@ -1411,7 +1455,7 @@ function renderRound(ev){
 function resolveOption(opt){
   const success = rnd(1,100) <= opt.chance;
   const before = state.ovr;
-  bumpAttrs(state.attrs, success ? opt.succ : opt.fail,opt.prodigy);
+  applyChoiceToAttrs(state.attrs,opt,success);
   state.ovr = clamp(computeOVR(state.attrs, state.style, state.category), 20, 99);
   state.peakOvr = Math.max(state.peakOvr, state.ovr);
   applyCareerChoice(state.currentEvent,opt,success,state.ovr-before);
@@ -1449,7 +1493,7 @@ function simulateRace(participates=true){
   if(participates){state.races++; state.seasonRaces++;currentTeamRecord().races++;}
 
   // Na F1, a força dos rivais já inclui o carro; a equipe também contribui para o jogador.
-  const myRoll = state.ovr + playerCarPerformance() + (careerSystems().preparation-60)/15 + (state.team.role==='first'?2:0) + rnd(-18,18);
+  const myRoll = raceAbility() + rnd(-18,18);
   const field = state.standings.map(r=>({...r, roll:r.strength+rnd(-18,18)}));
   if(participates) field.push({name:state.name, roll:myRoll, me:true});
   field.sort((a,b)=>b.roll-a.roll);
@@ -1736,7 +1780,7 @@ function simulateToRetirement(){
       const opt = pick(ev.options);
       const success = rnd(1,100)<=opt.chance;
       const before=state.ovr;
-      bumpAttrs(state.attrs,success ? opt.succ : opt.fail,opt.prodigy);
+      applyChoiceToAttrs(state.attrs,opt,success);
       updateRating();
       applyCareerChoice(ev,opt,success,state.ovr-before);
       if(ev.tag==="CHUVA" && success) state.seasonHadRain=true;
