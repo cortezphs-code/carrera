@@ -581,10 +581,11 @@ function strategicEvents(){
   return events;
 }
 function applyCareerChoice(event,opt,success,delta){
-  const c=careerSystems(),fx=opt.effects||{};
+  const c=careerSystems(),fx=consequenceEffects(opt,success);
+  state.decisionPace=raceDecisionImpact(opt,success);
   if(opt.prodigy){c.potential=98;careerNote('Descoberto como prodígio: potencial ampliado, sem garantia de resultados.');}
-  c.preparation=clamp(c.preparation+(fx.preparation??(opt.chance<60?-4:1)),0,100);
-  c.trust=clamp(c.trust+(fx.trust??(success?0:opt.chance<60?-3:-1)),0,100);
+  c.preparation=clamp(c.preparation+(fx.preparation??(opt.chance<60?-1:1)),0,100);
+  c.trust=clamp(c.trust+(fx.trust??(success?1:-1)),0,100);
   if(fx.money)state.careerEarnings+=fx.money;
   if(fx.sponsor)c.sponsor={until:state.year+1,buyout:100000};
   if(success&&opt.later)c.pending.push({year:state.year+1,key:teamProjectKey(),...opt.later});
@@ -597,6 +598,7 @@ function startCareerSeason(){
   if(c.sponsor&&state.year>c.sponsor.until)c.sponsor=null;
   for(const effect of c.pending.filter(e=>e.year<=state.year)){
     c.projects[effect.key]=clamp((c.projects[effect.key]||0)+effect.project,0,4);
+    if(effect.key===teamProjectKey())seasonNews(`${state.team.name} entrega a evolução planejada do carro.`);
     careerNote(effect.key===teamProjectKey()?'O investimento anterior melhorou seu carro.':'O projeto anterior evoluiu, mas você não está mais naquela equipe.');
   }
   c.pending=c.pending.filter(e=>e.year>state.year);
@@ -919,10 +921,8 @@ function bumpAttrs(attrs, delta, prodigy=false){
 function choiceImpact(opt,success){
   if(success)return opt.prodigy?Math.min(opt.succ,Math.max(0,85-state.ovr)):adjustedGain(opt.succ);
   if(opt.chance>=100)return 0;
-  // Perdas não recebem o desconto aplicado aos ganhos por idade e experiência.
-  const gain=Math.max(0,opt.succ);
-  const minimum=opt.chance<60?Math.max(4,Math.ceil(gain*1.25)):opt.chance<80?Math.max(2,Math.ceil(gain*.75)):1;
-  return -Math.max(Math.abs(opt.fail||0),minimum);
+  // O maior custo do risco é esportivo e temporário, não perda permanente de talento.
+  return opt.chance<60?-1:opt.chance<80?-.75:-.5;
 }
 function applyChoiceToAttrs(attrs,opt,success){
   const delta=choiceImpact(opt,success);
@@ -932,6 +932,23 @@ function previewChoice(opt,success){
   const attrs={...state.attrs};applyChoiceToAttrs(attrs,opt,success);
   const delta=computeOVR(attrs,state.style,state.category)-state.ovr;
   return (delta>=0?'+':'')+delta;
+}
+function decisionChance(opt,event=state.currentEvent){
+  if(opt.chance>=100)return 100;
+  const c=careerSystems();
+  const preparation=(c.preparation-60)/8;
+  const relevant=event?.skillKey?state.attrs?.[event.skillKey]:event?.tag==='CHUVA'?state.attrs?.rain:event?.tag==='EQUIPE'?state.attrs?.eng:state.attrs?.mental;
+  const skill=((relevant||state.ovr)-70)/10;
+  return Math.round(clamp(opt.chance+preparation+skill,15,95));
+}
+function raceDecisionImpact(opt,success){
+  if(Number.isFinite(success?opt.paceSuccess:opt.paceFailure))return success?opt.paceSuccess:opt.paceFailure;
+  if(opt.prodigy||opt.chance>=100)return 0;
+  return opt.chance<60?(success?16:-7):opt.chance<80?(success?5:-3):(success?0:-1);
+}
+function decisionSportText(opt){
+  const positive=raceDecisionImpact(opt,true),negative=raceDecisionImpact(opt,false);
+  return positive||negative?`No trecho: sucesso ${positive>=0?'+':''}${positive} desempenho · falha ${negative}. Zera na próxima decisão.`:'Sem alteração temporária no ritmo.';
 }
 function choiceRiskLabel(opt){return opt.chance>=100?'Sem risco':opt.chance<60?'Alto risco':opt.chance<80?'Risco moderado':'Conservadora';}
 
@@ -1173,7 +1190,7 @@ function renderOffers(offers, isTransferMidCareer){
       <div class="offer-name">${o.name}</div>
       <div class="offer-stars" title="Competitividade do carro nesta temporada">${"★".repeat(o.stars)}${"☆".repeat(5-o.stars)}</div>
       <div class="contract-facts"><div><small>SALÁRIO SEMANAL</small><b>€${o.weekly}k</b></div><div><small>DURAÇÃO</small><b>${o.years} ano(s)</b></div></div>
-      <div class="offer-role">${contractDescription(o)}</div><small class="offer-consequence">${o.renewal?'Renovação avaliada pelo seu desempenho atual':o.reason||'Oportunidade na categoria'}</small>${isTransferMidCareer?`<small class="salary-change">${o.weekly>=state.salaryWeek?'+':''}€${o.weekly-state.salaryWeek}k/sem em relação ao contrato atual</small>`:''}<small class="offer-consequence">${state.team&&state.team.id!==o.id&&state.team.category===o.category&&state.age<state.team.ageStart+state.team.years?'Saída antecipada: confiança −12.':o.renewal?'Continue o projeto e preserve sua evolução do carro.':'Comece um projeto nesta equipe.'}${careerSystems().sponsor&&state.team?.id!==o.id&&state.team?.category===o.category?' Patrocínio: devolução de €100k.':''}</small><span class="offer-action">${o.renewal?"Renovar contrato":"Escolher equipe"} →</span>
+      <div class="offer-role">${contractDescription(o)}</div><small class="contract-tradeoff">${o.role==='test'?'Estrutura forte, mas participação limitada: será preciso conquistar a vaga.':o.stars<=3?'Menor competitividade imediata; oportunidade de construir um projeto.':o.role==='second'?'Carro competitivo; você ainda precisa disputar a liderança interna.':'Liderança da equipe e cobrança por resultados.'}</small><small class="offer-consequence">${o.renewal?'Renovação avaliada pelo seu desempenho atual':o.reason||'Oportunidade na categoria'}</small>${isTransferMidCareer?`<small class="salary-change">${o.weekly>=state.salaryWeek?'+':''}€${o.weekly-state.salaryWeek}k/sem em relação ao contrato atual</small>`:''}<small class="offer-consequence">${state.team&&state.team.id!==o.id&&state.team.category===o.category&&state.age<state.team.ageStart+state.team.years?'Saída antecipada: confiança −12.':o.renewal?'Continue o projeto e preserve sua evolução do carro.':'Comece um projeto nesta equipe.'}${careerSystems().sponsor&&state.team?.id!==o.id&&state.team?.category===o.category?' Patrocínio: devolução de €100k.':''}</small><span class="offer-action">${o.renewal?"Renovar contrato":"Escolher equipe"} →</span>
     </button>
   `).join("");
 
@@ -1245,9 +1262,71 @@ function currentTeamRecord(){
 
 /* ---------------- Passo 3: temporada / rodadas ---------------- */
 
+function titleSituation(){
+ const table=seasonStandings(),me=table.findIndex(d=>d.me),leader=table[0];
+ const remaining=Math.max(0,state.seasonRaceTotal-state.calendarRaces);
+ const available=Math.min(remaining,Math.max(0,state.seasonRaceLimit-state.seasonRaces));
+ const gap=(leader?.pts||0)-state.seasonPoints;
+ const advantage=me===0?state.seasonPoints-(table[1]?.pts||0):0;
+ return {table,position:me+1,remaining,available,gap,advantage,alive:me===0||gap<=available*pointsForPosition(1),clinched:me===0&&advantage>remaining*pointsForPosition(1)};
+}
+function seasonNews(text){
+ state.news ||= [];if(state.news.at(-1)?.text===text)return;
+ state.news.push({year:state.year,text});state.news=state.news.slice(-12);
+}
+function consequenceEffects(opt,success){return {...(opt.effects||{}),...(success?opt.onSuccess:opt.onFailure)};}
+function consequenceSummary(opt){
+ const fx=opt.effects||{},parts=[];
+ for(const [key,label] of [['preparation','preparo'],['trust','confiança']])if(fx[key])parts.push(`${fx[key]>0?'+':''}${fx[key]} ${label}`);
+ if(fx.money)parts.push(formatCareerMoney(fx.money));
+ if(fx.preparation===undefined)parts.push(`${opt.chance<60?'−1':'+1'} preparo`);
+ if(fx.trust===undefined&&!opt.onSuccess?.trust&&!opt.onFailure?.trust)parts.push('confiança +1 no sucesso / −1 na falha');
+ if(opt.onSuccess?.trust)parts.push(`sucesso: ${opt.onSuccess.trust>0?'+':''}${opt.onSuccess.trust} confiança`);
+ if(opt.onFailure?.trust)parts.push(`falha: ${opt.onFailure.trust} confiança`);
+ const future=opt.later?'Se der certo: projeto do carro +1 no próximo ano, nesta equipe.':fx.sponsor?'Exclusividade até o próximo ano; trocar de equipe na mesma categoria custa €100k.':'Sem compromisso futuro adicional.';
+ return `<span class="choice-consequences"><span><strong>Agora</strong> OVR: ${previewChoice(opt,true)} / ${previewChoice(opt,false)} (sucesso / falha). ${parts.join(' · ')||'Confiança: +1 no sucesso / −1 na falha.'}</span><span><strong>Próximas corridas</strong> ${decisionSportText(opt)}</span><span><strong>Depois</strong> ${future}</span></span>`;
+}
+function championshipEvent(){
+ const t=titleSituation();
+ if(state.roundInSeason!==state.roundsThisSeason||state.roundsThisSeason<2||!t.alive||t.clinched||!t.remaining)return null;
+ const leading=t.position===1;
+ return {id:'season-title-finale',tag:'TÍTULO',title:leading?`Reta final: defender ${t.advantage} pontos de vantagem ou ampliar a liderança?`:`Reta final: faltam ${t.gap} pontos para alcançar o líder`,options:[
+ {text:leading?'Administrar a vantagem com margem para imprevistos':'Garantir pontos e esperar um tropeço do líder',chance:90,succ:1,fail:-1,paceSuccess:leading?2:0,paceFailure:-2},
+ {text:'Disputar posições sem abandonar a estratégia',chance:72,succ:3,fail:-3,paceSuccess:6,paceFailure:-4},
+ {text:leading?'Atacar para decidir o campeonato na pista':'Atacar o líder: apostar tudo na recuperação',chance:48,succ:5,fail:-5,paceSuccess:18,paceFailure:-10}
+ ]};
+}
+function contextualRaceEvents(){return [
+ {id:'context-wet',tag:'CHUVA',title:'Chuva na pista: atacar no trecho molhado ou preservar o resultado?',options:[
+ {text:'Preservar aderência e trazer o carro inteiro',chance:90,succ:1,fail:-1},
+ {text:'Explorar as linhas com mais aderência',chance:72,succ:3,fail:-3},
+ {text:'Atacar nas zonas molhadas para ganhar posições',chance:45,succ:6,fail:-6,paceSuccess:18,paceFailure:-10}
+ ]},
+ {id:'context-tyres',tag:'ESTRATÉGIA',title:'Estratégia de pneus: uma parada antecipada pode mudar a corrida',skillKey:'tyre',options:[
+ {text:'Seguir a janela prevista e preservar os pneus',chance:90,succ:1,fail:-1},
+ {text:'Antecipar a parada com cobertura da equipe',chance:73,succ:3,fail:-3},
+ {text:'Apostar numa parada fora da janela para ganhar tempo',chance:48,succ:5,fail:-5,paceSuccess:16,paceFailure:-9}
+ ]},
+ {id:'context-orders',tag:'EQUIPE',title:'A equipe pede colaboração com seu companheiro na disputa por pontos',options:[
+ {text:'Colaborar: reforçar a confiança e preservar a relação',chance:100,succ:0,fail:0,effects:{trust:5},paceSuccess:-1,paceFailure:0},
+ {text:'Negociar liberdade para disputar posição',chance:75,succ:1,fail:-1,onSuccess:{trust:2},onFailure:{trust:-3},paceSuccess:3,paceFailure:0},
+ {text:'Ignorar a orientação e atacar por conta própria',chance:45,succ:2,fail:-2,onSuccess:{trust:-3},onFailure:{trust:-9},paceSuccess:8,paceFailure:-2}
+ ]}];}
+function renderTrackContext(ev){
+ if(!['CHUVA','ESTRATÉGIA','TÍTULO'].includes(ev.tag))return '';
+ return `<div class="track-context"><svg viewBox="0 0 140 65" aria-hidden="true"><path d="M15 40Q5 10 40 13L115 9Q138 17 120 37L100 50L70 32L42 56Z" fill="none" stroke="currentColor" stroke-width="4"/></svg><div><b>${ev.tag==='CHUVA'?'Pista molhada':ev.tag==='ESTRATÉGIA'?'Gestão de pneus':'Disputa pelo título'}</b><small>Traçado ilustrativo · não representa um circuito específico</small></div></div>`;
+}
+function renderChampionshipPanel(){
+ const t=titleSituation();const teammate=state.standings.find(d=>d.name===state.teammate);
+ const badge=t.clinched?'Título matematicamente garantido':!t.alive?'Sem chance matemática de título':t.position===1?`Liderança: ${t.advantage} pts de vantagem`:`${t.gap} pts para alcançar o líder`;
+ const leaders=t.table.slice(0,3).map(d=>`<div><span class="driver-monogram">${escapeLogoText(d.name.split(' ').map(w=>w[0]).slice(0,2).join(''))}</span><b>${escapeLogoText(d.name)}</b><span>${d.pts} pts</span></div>`).join('');
+ return `<section class="championship-panel"><h4>A disputa da temporada</h4><b>${badge}</b><p>${t.remaining} corridas restantes · Você pode disputar até ${t.available}.</p><div class="title-contenders">${leaders}</div>${teammate?`<div class="teammate-duel"><small>Dupla da simulação · não reproduz a escalação histórica</small><b>Você ${state.seasonPoints} × ${teammate.pts} ${escapeLogoText(teammate.name)}</b><span>${state.seasonPoints>teammate.pts?'Você está à frente':state.seasonPoints<teammate.pts?'Seu companheiro está à frente':'Disputa empatada'}</span></div>`:''}<details class="roster-details"><summary>Notícias da carreira</summary><ul>${(state.news||[]).slice(-5).reverse().map(n=>`<li>${n.year} · ${escapeLogoText(n.text)}</li>`).join('')}</ul></details></section>`;
+}
+
 function prepareSeason(){
   refreshSeasonTeam();
   state.calendarRaces=0;
+  state.decisionPace=0;
   state.seasonRaceTotal=seasonRaceCount();
   state.seasonRaceLimit=state.team.role==='test'?Math.min(state.seasonRaceTotal,rnd(4,8)):state.seasonRaceTotal;
   state.roundInSeason = 0;
@@ -1259,6 +1338,8 @@ function prepareSeason(){
   state.standings = seasonDrivers(state.category, state.year).filter(driver=>driverKey(driver.name)!==driverKey(state.name)).map(driver=>({...driver, pts:0, finishes:[]}));
   state.lastRaceField = [];
   startCareerSeason();
+  state.teammate=[...state.standings].sort((a,b)=>Math.abs(a.strength-state.ovr)-Math.abs(b.strength-state.ovr))[0]?.name;
+  seasonNews(`${state.team.name}: começa a temporada ${state.year} de ${categoryLabel(state.category,state.year)}.`);
 
 }
 
@@ -1284,7 +1365,9 @@ function pickEvent(){
     state.seasonEventIds.push(event.id);state.recentEventIds=[...state.recentEventIds,event.id].slice(-12);state.lastTag=event.tag;
     return event;
   }
-  const pool = [...(EVENTS[state.category]||[]), ...EVENTS.transversal, ...strategicEvents()].filter(ev=>!ev.minAge||state.age>=ev.minAge);
+  const finale=championshipEvent();
+  if(finale&&!state.seasonEventIds.includes(finale.id)){state.seasonEventIds.push(finale.id);state.lastTag=finale.tag;return finale;}
+  const pool = [...(EVENTS[state.category]||[]), ...EVENTS.transversal, ...strategicEvents(), ...contextualRaceEvents()].filter(ev=>(!ev.minAge||state.age>=ev.minAge)&&!(state.category==='kart'&&ev.id==='context-tyres'));
   const unused = pool.filter(e=>!state.seasonEventIds.includes(e.id));
   let candidates = unused.filter(e=>!state.recentEventIds.includes(e.id) && e.tag!==state.lastTag);
   if(!candidates.length) candidates = unused.filter(e=>!state.recentEventIds.includes(e.id));
@@ -1430,6 +1513,7 @@ function renderRound(ev){
           </div>
         </div>
         <div class="event-body">
+          ${renderTrackContext(ev)}
           <h3>${ev.title}</h3>
           <p>${categoryLabel(state.category, state.year)} · ${state.team ? state.team.name : ""} · ${state.age} anos</p>
           <div class="options" id="options-wrap"></div>
@@ -1444,8 +1528,8 @@ function renderRound(ev){
     const btn = document.createElement('button');
     btn.className = 'option-btn';
     btn.innerHTML = `
-      <div class="otext"><b>${opt.text}</b><span>${choiceRiskLabel(opt)} · ${opt.chance}%: sucesso ${previewChoice(opt,true)} OVR · falha ${previewChoice(opt,false)} OVR</span></div>
-      <div class="probability"><div class="prob-labels"><span>${opt.chance}% sucesso</span><span>${100-opt.chance}% falha</span></div><div class="pctbar" aria-hidden="true"><div class="succ" style="width:${opt.chance}%"></div><div class="fai" style="width:${100-opt.chance}%"></div></div></div>
+      <div class="otext"><b>${opt.text}</b><span>${choiceRiskLabel(opt)} · sucesso ${previewChoice(opt,true)} OVR · falha ${previewChoice(opt,false)} OVR</span></div>
+      <div class="probability"><div class="prob-labels"><span>${decisionChance(opt,ev)}% sucesso</span><span>${100-decisionChance(opt,ev)}% falha</span></div><div class="pctbar" aria-hidden="true"><div class="succ" style="width:${decisionChance(opt,ev)}%"></div><div class="fai" style="width:${100-decisionChance(opt,ev)}%"></div></div></div>
     `;
     btn.onclick = ()=> resolveOption(opt);
     wrap.appendChild(btn);
@@ -1453,7 +1537,7 @@ function renderRound(ev){
 }
 
 function resolveOption(opt){
-  const success = rnd(1,100) <= opt.chance;
+  const success = rnd(1,100) <= decisionChance(opt,state.currentEvent);
   const before = state.ovr;
   applyChoiceToAttrs(state.attrs,opt,success);
   state.ovr = clamp(computeOVR(state.attrs, state.style, state.category), 20, 99);
@@ -1464,10 +1548,11 @@ function resolveOption(opt){
   if(ICONIC_EVENT_IDS.includes(state.currentEvent.id) && success) state.seasonIconic = true;
 
   // resultado de corrida da rodada
-  const winsBefore=state.wins;
+  const winsBefore=state.wins, podiumsBefore=state.podiums;
+  const pointsBefore=state.hasScoredPoints||false;
   const raceResult = simulateDecisionRaces();
   const firstWin=winsBefore===0&&state.wins>0;
-  state.currentResult = { success, delta:state.ovr-before, opt, raceResult, firstWin };
+  state.currentResult = { success, delta:state.ovr-before, opt, raceResult, firstWin, firstPodium:podiumsBefore===0&&state.podiums>0, firstPoints:!pointsBefore&&state.hasScoredPoints };
 
   renderResult();
 }
@@ -1493,7 +1578,7 @@ function simulateRace(participates=true){
   if(participates){state.races++; state.seasonRaces++;currentTeamRecord().races++;}
 
   // Na F1, a força dos rivais já inclui o carro; a equipe também contribui para o jogador.
-  const myRoll = raceAbility() + rnd(-18,18);
+  const myRoll = raceAbility() + (state.decisionPace||0) + rnd(-18,18);
   const field = state.standings.map(r=>({...r, roll:r.strength+rnd(-18,18)}));
   if(participates) field.push({name:state.name, roll:myRoll, me:true});
   field.sort((a,b)=>b.roll-a.roll);
@@ -1508,6 +1593,9 @@ function simulateRace(participates=true){
 
   if(participates && Math.random() < (state.ovr>=72 ? 0.22 : 0.08)){ state.poles++; }
 
+  if(pts>0&&!state.hasScoredPoints){state.hasScoredPoints=true;seasonNews(`${state.name} marca seus primeiros pontos na carreira.`);}
+  if(participates&&pos===1&&state.wins===1)seasonNews(`${state.name} conquista a primeira vitória com ${state.team.name}.`);
+  if(participates&&pos<=3&&state.podiums===1)seasonNews(`${state.name} sobe ao pódio pela primeira vez.`);
   state.seasonPoints += pts;
   if(participates) state.seasonFinishes.push(pos);
   // Todos pontuam pelo mesmo resultado e pela mesma tabela simplificada do jogo.
@@ -1541,10 +1629,11 @@ function renderResult(){
     <div class="game-grid" style="--team-color:${teamAccent(state.team?.name)}">
       ${renderDriverCard()}
       <div class="event-panel">
-        ${r.firstWin?renderMilestone('Sua primeira vitória','O primeiro lugar que inaugura seu legado.'):''}
+        ${r.firstWin?renderMilestone('Sua primeira vitória','O primeiro lugar que inaugura seu legado.'):r.firstPodium?renderMilestone('Seu primeiro pódio','Um lugar entre os melhores da prova.'):r.firstPoints?renderMilestone('Seus primeiros pontos','A primeira conquista na classificação.',12):''}
         <div ${eventVisualAttributes(ev)}></div>
         <div class="event-body">
           ${renderBroadcast(r.raceResult)}
+          <p>Ritmo neste trecho: ${state.decisionPace>=0?'+':''}${state.decisionPace||0}. Este efeito termina na próxima decisão.</p>
           <span class="result-badge ${r.success?'ok':'bad'}">${r.success ? "A escolha deu certo" : "A escolha deu errado"}</span>
           <h3>${r.opt.text}</h3>
           <p>${r.success
@@ -1598,6 +1687,7 @@ function renderDriverCard(){
         <div><b>${state.podiums}</b><span>Pódios</span></div>
       </div>
       ${renderDriverTrophies()}
+      <p class="driver-category">${categoryLabel(state.category,state.year)}</p>
       ${renderCareerStatus()}
       ${renderEvolution()}
     </div>
@@ -1624,6 +1714,7 @@ function renderSidePanel(){
 
   return `
     <div class="side-panel">
+      ${renderChampionshipPanel()}
       ${renderCareerTimeline()}
       <details class="roster-details"><summary>Estatísticas por temporada</summary>
       <table class="years">
@@ -1668,7 +1759,7 @@ function endSeason(automatic=false){
   if(seasonTrophies.length===0 && state.seasonWins>0) seasonTrophies.push("Superação");
 
   seasonTrophies.forEach(t=> state.trophies.push({age:state.age, name:t}));
-  if(myPos===1) currentTeamRecord().titles++;
+  if(myPos===1){currentTeamRecord().titles++;seasonNews(`${state.name} é campeão da ${categoryLabel(state.category,state.year)} com ${state.team.name}.`);}
 
   state.yearHistory.push({
     age:state.age, year:state.year, team:state.team?state.team.name:null, category:state.category,
@@ -1778,7 +1869,7 @@ function simulateToRetirement(){
       state.roundInSeason = r;
       const ev = pickEvent();
       const opt = pick(ev.options);
-      const success = rnd(1,100)<=opt.chance;
+      const success = rnd(1,100)<=decisionChance(opt,ev);
       const before=state.ovr;
       applyChoiceToAttrs(state.attrs,opt,success);
       updateRating();
