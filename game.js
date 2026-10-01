@@ -496,24 +496,6 @@ function currentSeasonTeam(team=state.team){
   if(!team||team.category!==state.category) return null;
   return categoryTeams(state.category).find(t=>t.id===team.id||t.name===team.name)||null;
 }
-// Parâmetros de equilíbrio por era. De 2026 em diante, são projeções do jogo.
-function f1CarRating(team,year=state.year){
-  const id=team?.id||categoryTeams('f1',year).find(t=>t.name===team?.name)?.id;
-  const era=year<=2013?0:year<=2016?1:year<=2020?2:year<=2023?3:4;
-  const ratings={
-    redbull:[100,88,91,100,94],mercedes:[82,100,100,91,96],
-    ferrari:[94,93,95,92,94],mclaren:[95,72,83,86,100],
-    williams:[68,89,64,68,78],enstone:[86,72,79,77,70],
-    sauber:[75,62,69,65,58],faenza:[70,72,76,73,74],
-    silverstone:[77,79,83,83,76],haas:[62,72,73,65,72],
-    cadillac:[50,50,50,50,52],caterham:[48,48,48,48,48],manor:[46,46,46,46,46]
-  };
-  const base=(ratings[id]||[65,65,65,65,65])[era];
-  // Crescimento industrial gradual, separado dos investimentos do piloto.
-  const growth=id==='sauber'?3.25:id==='cadillac'?2.5:0;
-  const cycle=year>2026?Math.sin((year-2026)*1.15+(id||'').split('').reduce((a,c)=>a+c.charCodeAt(0),0)) * 4:0;
-  return clamp(base+Math.max(0,year-2026)*growth+cycle,40,id==='sauber'?94:id==='cadillac'?88:100);
-}
 function f1TeamStars(team,year=state.year){
   const rating=f1CarRating(team,year);
   return rating>=94?5:rating>=85?4:rating>=73?3:rating>=58?2:1;
@@ -582,10 +564,11 @@ function strategicEvents(){
 }
 function applyCareerChoice(event,opt,success,delta){
   const c=careerSystems(),fx=consequenceEffects(opt,success);
-  state.decisionPace=raceDecisionImpact(opt,success);
+  state.decisionPace=0;
+  if(state.pendingRaceTarget)state.pendingRaceTarget.success=success;
   if(opt.prodigy){c.potential=98;careerNote('Descoberto como prodígio: potencial ampliado, sem garantia de resultados.');}
-  c.preparation=clamp(c.preparation+(fx.preparation??(opt.chance<60?-1:1)),0,100);
-  c.trust=clamp(c.trust+(fx.trust??(success?1:-1)),0,100);
+  c.preparation=clamp(c.preparation+(fx.preparation??(success?2:0)),0,100);
+  c.trust=clamp(c.trust+(fx.trust??(success?2:-1)),0,100);
   if(fx.money)state.careerEarnings+=fx.money;
   if(fx.sponsor)c.sponsor={until:state.year+1,buyout:100000};
   if(success&&opt.later)c.pending.push({year:state.year+1,key:teamProjectKey(),...opt.later});
@@ -629,7 +612,7 @@ function endCareerSeason(position){
   if(c.trust>=65){const key=teamProjectKey();c.projects[key]=clamp((c.projects[key]||0)+.5,0,4);}
 }
 function renderCareerStatus(){
-  const c=careerSystems();return `<section class="career-status"><h4>Seu projeto de carreira</h4><p>Confiança <b>${Math.round(c.trust)}</b> · Preparo <b>${Math.round(c.preparation)}</b></p><p>Potencial <b>${c.potential>=98?'Prodígio':'Alto'}</b> · Projeto do carro <b>+${projectStrength().toFixed(1)}</b></p>${state.category==='f1'?`<p>Carro: <b>${f1CarRating(state.team)}/100</b> · ${f1TeamStars(state.team)<=2?'Projeto em construção: títulos são muito difíceis.':'Competitividade própria da escuderia.'}</p>`:''}<p>Preparo influencia o ritmo; confiança melhora propostas. O projeto do carro cresce com investimento e continuidade.</p><p><b>Objetivo:</b> ${c.objective?.label||'Conquistar seu espaço'}</p>${c.rival?`<p><b>Rival:</b> ${escapeLogoText(c.rival)}</p>`:''}${c.sponsor?`<p>Patrocínio exclusivo até ${c.sponsor.until}. Trocar de equipe na mesma categoria exige devolver €100k.</p>`:''}</section>`;
+  const c=careerSystems();return `<section class="career-status"><h4>Seu projeto de carreira</h4><p>Confiança <b>${Math.round(c.trust)}</b> · Preparo <b>${Math.round(c.preparation)}</b></p><p>Potencial <b>${c.potential>=98?'Prodígio':'Alto'}</b> · Projeto do carro <b>+${projectStrength().toFixed(1)}</b></p>${state.category==='f1'?`<p>Carro: <b>${f1CarRating(state.team)}/100</b> · ${f1TeamStars(state.team)<=2?'Projeto em construção: títulos são muito difíceis.':'Competitividade própria da escuderia.'}</p>`:''}<p>Preparo influencia o ritmo; confiança melhora propostas. O projeto do carro cresce com investimento e continuidade.</p><p><b>Objetivo:</b> ${c.objective?.label||'Conquistar seu espaço'}</p>${state.category==='f1'?'<p><b>Desafio extra:</b> atacar e chegar ao top 8, ao menos três posições acima da referência do seu conjunto piloto/carro.</p>':''}${c.rival?`<p><b>Rival:</b> ${escapeLogoText(c.rival)}</p>`:''}${c.sponsor?`<p>Patrocínio exclusivo até ${c.sponsor.until}. Trocar de equipe na mesma categoria exige devolver €100k.</p>`:''}</section>`;
 }
 function renderDecisionJournal(all=false){
   const items=careerSystems().journal.filter(e=>all||e.year===state.year);
@@ -919,10 +902,11 @@ function bumpAttrs(attrs, delta, prodigy=false){
   Object.keys(attrs).forEach(k=>{ attrs[k] = clamp(attrs[k]+change,20,99); });
 }
 function choiceImpact(opt,success){
+  if(opt.raceStyle)return success?adjustedGain(opt.succ):opt.fail;
   if(success)return opt.prodigy?Math.min(opt.succ,Math.max(0,85-state.ovr)):adjustedGain(opt.succ);
   if(opt.chance>=100)return 0;
   // O maior custo do risco é esportivo e temporário, não perda permanente de talento.
-  return opt.chance<60?-1:opt.chance<80?-.75:-.5;
+  return opt.chance<60?-.25:opt.chance<80?-.2:-.15;
 }
 function applyChoiceToAttrs(attrs,opt,success){
   const delta=choiceImpact(opt,success);
@@ -934,6 +918,7 @@ function previewChoice(opt,success){
   return (delta>=0?'+':'')+delta;
 }
 function decisionChance(opt,event=state.currentEvent){
+  if(opt.raceStyle)return raceTargetPlan(opt).chance;
   if(opt.chance>=100)return 100;
   const c=careerSystems();
   const preparation=(c.preparation-60)/8;
@@ -949,6 +934,23 @@ function raceDecisionImpact(opt,success){
 function decisionSportText(opt){
   const positive=raceDecisionImpact(opt,true),negative=raceDecisionImpact(opt,false);
   return positive||negative?`No trecho: sucesso ${positive>=0?'+':''}${positive} desempenho · falha ${negative}. Zera na próxima decisão.`:'Sem alteração temporária no ritmo.';
+}
+// Preview uses the same functions as resolution; rhythm is not championship points.
+function choiceOutcomeText(opt,success){
+  const pace=0,ovr=Number(previewChoice(opt,success));
+  const hasPace=false;
+  const parts=[];
+  if(hasPace)parts.push(pace===0?'mantém ritmo':`${pace>0?'+':''}${pace} ritmo`);
+  if(ovr!==0)parts.push(`${ovr>0?'+':''}${ovr} OVR`);
+  const fx=consequenceEffects(opt,success);
+  if(fx.trust)parts.push(`${fx.trust>0?'+':''}${fx.trust} confiança`);
+  if(fx.preparation)parts.push(`${fx.preparation>0?'+':''}${fx.preparation} preparo`);
+  if(fx.money)parts.push(formatCareerMoney(fx.money));
+  return parts.join(', ')||'OVR mantido';
+}
+function choiceOutcomeSummary(opt){
+  if(opt.chance>=100)return `${choiceRiskLabel(opt)} · ${choiceOutcomeText(opt,true)}`;
+  return `${choiceRiskLabel(opt)} · Sucesso: ${choiceOutcomeText(opt,true)} · Falha: ${choiceOutcomeText(opt,false)}`;
 }
 function choiceRiskLabel(opt){return opt.chance>=100?'Sem risco':opt.chance<60?'Alto risco':opt.chance<80?'Risco moderado':'Conservadora';}
 
@@ -1115,9 +1117,10 @@ function confirmCreate(){
 /* ---------------- Passo 2: propostas de equipe ---------------- */
 
 function eliteSeatEligible(){
-  const c=careerSystems(),years=state.yearHistory.filter(y=>y.category==='f1');
-  return state.ovr>=85&&c.trust>=60&&c.preparation>=50&&
-    (years.filter(y=>y.position<=8).length>=2||years.some(y=>y.position===1));
+  const c=careerSystems(),years=state.yearHistory.filter(y=>y.category==='f1').slice(-3);
+  const standout=years.filter(y=>y.position<=Math.max(3,Math.round((100-(y.carRating||80))*.35)+2));
+  return state.ovr>=87&&c.trust>=60&&c.preparation>=50&&
+    (standout.length>=2||years.some(y=>y.position===1));
 }
 function exceptionalJunior(){
   return state.yearHistory.some(y=>y.category==='f2'&&y.position===1)&&state.ovr>=80&&careerSystems().trust>=65;
@@ -1133,8 +1136,7 @@ function raceAbility(){
   // Rivais já usam força combinada de piloto/carro. Mesma escala 0–100 para o jogador.
   const c=careerSystems();
   const adaptation=state.age===state.team.ageStart?.8:0;
-  return clamp(state.ovr*.65+f1CarRating(state.team)*.35+projectStrength()*.35+
-    (c.preparation-30)/40+(state.team.role==='first'?.4:0)-adaptation,20,99);
+  return combinedRaceStrength(state.ovr,f1CarRating(state.team),projectStrength(),c.preparation,state.team.role==='first',adaptation);
 }
 function generateOffers(category, tierBias){
   // tierBias: 1 = base baixa, 2 = média, 3 = alta (pra propostas melhores conforme OVR sobe)
@@ -1201,6 +1203,7 @@ function renderOffers(offers, isTransferMidCareer){
         <p>${sub}</p>
       </div>
       ${isTransferMidCareer&&state.team?`<section class="current-contract">${renderTeamLogo(state.team,true)}<div><small>Seu contrato atual</small><b>${escapeLogoText(state.team.name)} · ${categoryLabel(state.team.category,state.year)}</b></div><span>€${state.salaryWeek}k/sem · ${contractDescription(state.team)}</span></section>`:''}
+      ${renderMarketStatus()}
       <div class="offers-grid">${cardsHtml}</div>
       ${isTransferMidCareer ? `
         <div class="agent-row">
@@ -1323,7 +1326,48 @@ function renderChampionshipPanel(){
  return `<section class="championship-panel"><h4>A disputa da temporada</h4><b>${badge}</b><p>${t.remaining} corridas restantes · Você pode disputar até ${t.available}.</p><div class="title-contenders">${leaders}</div>${teammate?`<div class="teammate-duel"><small>Dupla da simulação · não reproduz a escalação histórica</small><b>Você ${state.seasonPoints} × ${teammate.pts} ${escapeLogoText(teammate.name)}</b><span>${state.seasonPoints>teammate.pts?'Você está à frente':state.seasonPoints<teammate.pts?'Seu companheiro está à frente':'Disputa empatada'}</span></div>`:''}<details class="roster-details"><summary>Notícias da carreira</summary><ul>${(state.news||[]).slice(-5).reverse().map(n=>`<li>${n.year} · ${escapeLogoText(n.text)}</li>`).join('')}</ul></details></section>`;
 }
 
+// A race choice commits to an achievable target before attributes change.
+function raceTargetPlan(opt){
+  if(!opt.raceStyle)return null;
+  const n=state.standings.length+1,ability=raceAbility();
+  const expected=1+state.standings.filter(d=>d.strength>ability).length;
+  const offset={safe:0,balanced:3,attack:7}[opt.raceStyle];
+  const low=clamp(expected-offset,1,Math.max(1,n-2));
+  const high=Math.min(n-1,low+(opt.raceStyle==='attack'?1:2));
+  const skill=state.currentEvent?.tag==='CHUVA'?state.attrs.rain:state.attrs.tyre;
+  const chance=Math.round(clamp(({safe:88,balanced:70,attack:48}[opt.raceStyle])+(skill-75)/8+(careerSystems().preparation-60)/12,10,95));
+  return {low,high,chance,n,style:opt.raceStyle,label:low===high?`P${low}`:`P${low}–P${high}`};
+}
+function pickEvent(){
+  const ev=pickOriginalEvent();
+  const total=state.seasonRaceTotal,end=Math.floor(state.roundInSeason*total/state.roundsThisSeason);
+  const available=Math.floor(end*state.seasonRaceLimit/total)-state.seasonRaces;
+  if(available<=0||!(['CHUVA','ESTRATÉGIA'].includes(ev.tag)||ev.id==='season-title-finale'))return ev;
+  return {...ev,title:ev.tag==='CHUVA'?'Pista molhada: quanto você vai exigir do carro?':ev.tag==='ESTRATÉGIA'?'Estratégia de corrida: preservar o ritmo ou atacar?':ev.title,options:[
+    {text:'Preservar o carro e buscar um resultado consistente',raceStyle:'safe',chance:88,succ:.3,fail:-.15},
+    {text:'Explorar oportunidades para superar o ritmo esperado',raceStyle:'balanced',chance:70,succ:2.5,fail:-.2},
+    {text:'Atacar no limite para buscar um resultado excepcional',raceStyle:'attack',chance:48,succ:6,fail:-.25}
+  ]};
+}
+function placeTargetRace(field,participates){
+  const p=state.pendingRaceTarget;if(!p||!participates)return false;
+  const end=Math.floor(state.roundInSeason*state.seasonRaceTotal/state.roundsThisSeason);
+  if(Math.floor(state.calendarRaces*state.seasonRaceLimit/state.seasonRaceTotal)!==Math.floor(end*state.seasonRaceLimit/state.seasonRaceTotal))return false;
+  state.pendingRaceTarget=null;
+  const driver=field.splice(field.findIndex(d=>d.me),1)[0];
+  const dnf=!p.success&&p.style==='attack'&&Math.random()<.2;
+  const pos=p.success?rnd(p.low,p.high):dnf?p.n:rnd(Math.min(p.n,p.high+1),p.n);
+  field.splice(pos-1,0,driver);return dnf;
+}
+function raceChoiceSummary(opt){
+  const p=raceTargetPlan(opt);
+  if(!p)return choiceOutcomeSummary(opt);
+  const gain=Number(previewChoice(opt,true)),loss=Number(previewChoice(opt,false));
+  return `${choiceRiskLabel(opt)} · Sucesso: ${p.label}${gain?' e +'+gain+' OVR':''} · Falha: ${p.high<p.n?'P'+(p.high+1)+' ou pior':'último lugar'}${p.style==='attack'?', com risco de abandono':''}${loss?' e '+loss+' OVR':''}`;
+}
+
 function prepareSeason(){
+  state.pendingRaceTarget=null;
   refreshSeasonTeam();
   state.calendarRaces=0;
   state.decisionPace=0;
@@ -1336,9 +1380,14 @@ function prepareSeason(){
   state.seasonHadRain=false; state.seasonIconic=false;
 
   state.standings = seasonDrivers(state.category, state.year).filter(driver=>driverKey(driver.name)!==driverKey(state.name)).map(driver=>({...driver, pts:0, finishes:[]}));
+  if(state.category==='f1'){
+    const seat=state.standings.map((d,i)=>({d,i})).filter(x=>x.d.teamId===state.team.id).sort((a,b)=>a.d.strength-b.d.strength)[0];
+    if(seat)state.standings.splice(seat.i,1);
+  }
   state.lastRaceField = [];
   startCareerSeason();
-  state.teammate=[...state.standings].sort((a,b)=>Math.abs(a.strength-state.ovr)-Math.abs(b.strength-state.ovr))[0]?.name;
+  if(state.category==='f1')state.standings.forEach(d=>{d.strength=combinedRaceStrength(d.driverRating,f1CarRating({id:d.teamId}),careerSystems().projects['f1:'+d.teamId]||0);});
+  state.teammate=(state.category==='f1'?state.standings.find(d=>d.teamId===state.team.id)?.name:null)||[...state.standings].sort((a,b)=>Math.abs(a.strength-state.ovr)-Math.abs(b.strength-state.ovr))[0]?.name;
   seasonNews(`${state.team.name}: começa a temporada ${state.year} de ${categoryLabel(state.category,state.year)}.`);
 
 }
@@ -1350,7 +1399,7 @@ function startSeason(){
   nextRound();
 }
 
-function pickEvent(){
+function pickOriginalEvent(){
   // Sorteio único por carreira, não por rodada: 10% recebem a descoberta aos 14–15.
   if(!state.prodigyChecked){
     state.prodigyChecked=true;
@@ -1516,6 +1565,7 @@ function renderRound(ev){
           ${renderTrackContext(ev)}
           <h3>${ev.title}</h3>
           <p>${categoryLabel(state.category, state.year)} · ${state.team ? state.team.name : ""} · ${state.age} anos</p>
+          <p class="choice-help">${ev.options.some(o=>o.raceStyle)?"Objetivo para uma corrida decisiva deste trecho, conforme seu carro e piloto. As demais corridas são simuladas. Posições fora dos oito primeiros não pontuam.":"As escolhas influenciam a evolução do piloto e sua relação com a equipe."}</p>
           <div class="options" id="options-wrap"></div>
         </div>
       </div>
@@ -1528,8 +1578,8 @@ function renderRound(ev){
     const btn = document.createElement('button');
     btn.className = 'option-btn';
     btn.innerHTML = `
-      <div class="otext"><b>${opt.text}</b><span>${choiceRiskLabel(opt)} · sucesso ${previewChoice(opt,true)} OVR · falha ${previewChoice(opt,false)} OVR</span></div>
-      <div class="probability"><div class="prob-labels"><span>${decisionChance(opt,ev)}% sucesso</span><span>${100-decisionChance(opt,ev)}% falha</span></div><div class="pctbar" aria-hidden="true"><div class="succ" style="width:${decisionChance(opt,ev)}%"></div><div class="fai" style="width:${100-decisionChance(opt,ev)}%"></div></div></div>
+      <div class="otext"><b>${opt.text}</b><span>${raceChoiceSummary(opt)}</span></div>
+      <div class="probability"><div class="prob-labels"><span>${decisionChance(opt,ev)}% ${opt.raceStyle?"de "+raceTargetPlan(opt).label:"sucesso"}</span><span>${100-decisionChance(opt,ev)}% falha</span></div><div class="pctbar" aria-hidden="true"><div class="succ" style="width:${decisionChance(opt,ev)}%"></div><div class="fai" style="width:${100-decisionChance(opt,ev)}%"></div></div></div>
     `;
     btn.onclick = ()=> resolveOption(opt);
     wrap.appendChild(btn);
@@ -1537,6 +1587,7 @@ function renderRound(ev){
 }
 
 function resolveOption(opt){
+  state.pendingRaceTarget=raceTargetPlan(opt);
   const success = rnd(1,100) <= decisionChance(opt,state.currentEvent);
   const before = state.ovr;
   applyChoiceToAttrs(state.attrs,opt,success);
@@ -1582,16 +1633,18 @@ function simulateRace(participates=true){
   const field = state.standings.map(r=>({...r, roll:r.strength+rnd(-18,18)}));
   if(participates) field.push({name:state.name, roll:myRoll, me:true});
   field.sort((a,b)=>b.roll-a.roll);
+  const retired=placeTargetRace(field,participates);
   const pos = field.findIndex(f=>f.me)+1;
 
-  const pts = participates ? pointsForPosition(pos) : 0;
+  const pts = participates && !retired ? pointsForPosition(pos) : 0;
   let label="Sem pontuar";
-  if(pos===1){ label="Vitória"; state.wins++; state.seasonWins++; currentTeamRecord().wins++; state.podiums++; state.seasonPodiums++; currentTeamRecord().podiums++; }
+  if(retired){label="Abandono";}
+  else if(pos===1){ label="Vitória"; state.wins++; state.seasonWins++; currentTeamRecord().wins++; state.podiums++; state.seasonPodiums++; currentTeamRecord().podiums++; }
   else if(participates&&pos<=3){ label="Pódio (P"+pos+")"; state.podiums++; state.seasonPodiums++; currentTeamRecord().podiums++; }
   else if(participates&&pos<=8){ label="P"+pos+" — pontuou"; }
   else { label="P"+pos; }
 
-  if(participates && Math.random() < (state.ovr>=72 ? 0.22 : 0.08)){ state.poles++; }
+  if(participates && !retired && Math.random() < (state.ovr>=72 ? 0.22 : 0.08)){ state.poles++; }
 
   if(pts>0&&!state.hasScoredPoints){state.hasScoredPoints=true;seasonNews(`${state.name} marca seus primeiros pontos na carreira.`);}
   if(participates&&pos===1&&state.wins===1)seasonNews(`${state.name} conquista a primeira vitória com ${state.team.name}.`);
@@ -1600,7 +1653,7 @@ function simulateRace(participates=true){
   if(participates) state.seasonFinishes.push(pos);
   // Todos pontuam pelo mesmo resultado e pela mesma tabela simplificada do jogo.
   state.lastRaceField = field.map((driver,index)=>({
-    name:driver.name, me:!!driver.me, pos:index+1, pts:pointsForPosition(index+1)
+    name:driver.name, me:!!driver.me, pos:index+1, pts:driver.me&&retired?0:pointsForPosition(index+1)
   }));
   state.standings.forEach(r=>{
     const result = state.lastRaceField.find(driver=>!driver.me && driver.name===r.name);
@@ -1614,7 +1667,7 @@ function simulateRace(participates=true){
   const earn = Math.round(state.salaryWeek * 1000 * 52 / state.seasonRaceTotal);
   state.careerEarnings += earn;
 
-  return { pos, pts, label };
+  return { pos, pts, label, retired };
 }
 
 function renderResult(){
@@ -1633,7 +1686,7 @@ function renderResult(){
         <div ${eventVisualAttributes(ev)}></div>
         <div class="event-body">
           ${renderBroadcast(r.raceResult)}
-          <p>Ritmo neste trecho: ${state.decisionPace>=0?'+':''}${state.decisionPace||0}. Este efeito termina na próxima decisão.</p>
+          ${state.lastHighlight?`<p class="effect-chip"><b>Destaque para o mercado:</b> P${state.lastHighlight.pos}, acima da referência P${state.lastHighlight.expected}. Este resultado ajuda a abrir portas.</p>`:''}
           <span class="result-badge ${r.success?'ok':'bad'}">${r.success ? "A escolha deu certo" : "A escolha deu errado"}</span>
           <h3>${r.opt.text}</h3>
           <p>${r.success
@@ -1793,6 +1846,7 @@ function renderSeasonSummary(pos, trophies){
         ${trophies.length ? trophies.map(t=>`<span class="trophy-chip">${racingIcon('cup')} ${t}</span>`).join("") : `<span class="trophy-chip" style="color:var(--muted);border-color:var(--line);">Sem título nesta temporada</span>`}
       </div>
       <p>Objetivo: ${careerSystems().objective?.label||'Conquistar seu espaço'} · <b>${careerSystems().lastObjective?'Cumprido':'Não cumprido'}</b></p>
+      ${renderMarketStatus()}
       ${renderDecisionJournal()}
       <button class="btn btn-primary" id="btn-advance">${state.age>=42?"Encerrar carreira 🏁":`Avançar para ${state.year+1} · ${state.age+1} anos »`}</button>
     </div>
@@ -1869,6 +1923,8 @@ function simulateToRetirement(){
       state.roundInSeason = r;
       const ev = pickEvent();
       const opt = pick(ev.options);
+      state.currentEvent=ev;
+      state.pendingRaceTarget=raceTargetPlan(opt);
       const success = rnd(1,100)<=decisionChance(opt,ev);
       const before=state.ovr;
       applyChoiceToAttrs(state.attrs,opt,success);
@@ -1992,6 +2048,182 @@ function computeAwards(cat){
     {label:"Testado por Equipe de Fábrica", unlocked: state.trophies.length>0},
     {label:"Sócio da Primeira Corrida", unlocked: state.yearHistory.length>0 && state.yearHistory[0].races===CATEGORY_ROUNDS.kart},
   ];
+}
+
+const F1_SEASON_DATA={"2010":{"cars":{"redbull":100.0,"mclaren":98.2,"ferrari":95.6,"mercedes":86.3,"enstone":82.9,"williams":74.9,"silverstone":74.8,"sauber":71.9,"faenza":66.5,"caterham":60.0,"hrt":60.0,"manor":60.0},"drivers":[{"name":"Sebastian Vettel","teamId":"redbull","driverRating":98},{"name":"Fernando Alonso","teamId":"ferrari","driverRating":97.5},{"name":"Mark Webber","teamId":"redbull","driverRating":96.2},{"name":"Lewis Hamilton","teamId":"mclaren","driverRating":96.5},{"name":"Jenson Button","teamId":"mclaren","driverRating":94.5},{"name":"Felipe Massa","teamId":"ferrari","driverRating":89.5},{"name":"Nico Rosberg","teamId":"mercedes","driverRating":95.0},{"name":"Robert Kubica","teamId":"enstone","driverRating":94.5},{"name":"Michael Schumacher","teamId":"mercedes","driverRating":87.1},{"name":"Rubens Barrichello","teamId":"williams","driverRating":93.5},{"name":"Adrian Sutil","teamId":"silverstone","driverRating":93.0},{"name":"Kamui Kobayashi","teamId":"sauber","driverRating":92.5},{"name":"Vitaly Petrov","teamId":"enstone","driverRating":80.8},{"name":"Nico Hulkenberg","teamId":"williams","driverRating":84.6},{"name":"Vitantonio Liuzzi","teamId":"silverstone","driverRating":84.3},{"name":"Sebastien Buemi","teamId":"faenza","driverRating":92.0},{"name":"Pedro de la Rosa","teamId":"sauber","driverRating":80.6},{"name":"Nick Heidfeld","teamId":"sauber","driverRating":80.6},{"name":"Jaime Alguersuari","teamId":"faenza","driverRating":86.8},{"name":"Heikki Kovalainen","teamId":"caterham","driverRating":85.0},{"name":"Jarno Trulli","teamId":"caterham","driverRating":85.0},{"name":"Karun Chandhok","teamId":"hrt","driverRating":85.0},{"name":"Bruno Senna","teamId":"hrt","driverRating":85.0},{"name":"Lucas di Grassi","teamId":"manor","driverRating":85.0},{"name":"Timo Glock","teamId":"manor","driverRating":85.0},{"name":"Sakon Yamamoto","teamId":"hrt","driverRating":85.0},{"name":"Christian Klien","teamId":"hrt","driverRating":85.0}]},"2011":{"cars":{"redbull":100.0,"mclaren":95.0,"ferrari":90.4,"mercedes":80.1,"enstone":73.4,"silverstone":73.0,"sauber":70.4,"faenza":70.0,"williams":63.5,"caterham":60.0,"hrt":60.0,"manor":60.0},"drivers":[{"name":"Sebastian Vettel","teamId":"redbull","driverRating":98},{"name":"Jenson Button","teamId":"mclaren","driverRating":97.5},{"name":"Mark Webber","teamId":"redbull","driverRating":92.2},{"name":"Fernando Alonso","teamId":"ferrari","driverRating":96.5},{"name":"Lewis Hamilton","teamId":"mclaren","driverRating":93.8},{"name":"Felipe Massa","teamId":"ferrari","driverRating":87.9},{"name":"Nico Rosberg","teamId":"mercedes","driverRating":95.0},{"name":"Michael Schumacher","teamId":"mercedes","driverRating":92.5},{"name":"Adrian Sutil","teamId":"silverstone","driverRating":94.0},{"name":"Vitaly Petrov","teamId":"enstone","driverRating":93.5},{"name":"Nick Heidfeld","teamId":"enstone","driverRating":91.9},{"name":"Kamui Kobayashi","teamId":"sauber","driverRating":92.5},{"name":"Paul di Resta","teamId":"silverstone","driverRating":87.0},{"name":"Jaime Alguersuari","teamId":"faenza","driverRating":92.0},{"name":"Sebastien Buemi","teamId":"faenza","driverRating":86.1},{"name":"Sergio Perez","teamId":"sauber","driverRating":84.5},{"name":"Rubens Barrichello","teamId":"williams","driverRating":92.0},{"name":"Bruno Senna","teamId":"enstone","driverRating":78.8},{"name":"Pastor Maldonado","teamId":"williams","driverRating":81.5},{"name":"Pedro de la Rosa","teamId":"sauber","driverRating":78.0},{"name":"Jarno Trulli","teamId":"caterham","driverRating":85.0},{"name":"Heikki Kovalainen","teamId":"caterham","driverRating":85.0},{"name":"Vitantonio Liuzzi","teamId":"hrt","driverRating":85.0},{"name":"Jerome d'Ambrosio","teamId":"manor","driverRating":85.0},{"name":"Timo Glock","teamId":"manor","driverRating":85.0},{"name":"Narain Karthikeyan","teamId":"hrt","driverRating":85.0},{"name":"Daniel Ricciardo","teamId":"hrt","driverRating":85.0},{"name":"Karun Chandhok","teamId":"caterham","driverRating":85.0}]},"2012":{"cars":{"redbull":100.0,"ferrari":97.3,"mclaren":96.3,"enstone":92.4,"mercedes":82.3,"sauber":80.9,"silverstone":79.5,"williams":76.3,"faenza":69.5,"caterham":60.0,"manor":60.0,"hrt":60.0},"drivers":[{"name":"Sebastian Vettel","teamId":"redbull","driverRating":98},{"name":"Fernando Alonso","teamId":"ferrari","driverRating":97.5},{"name":"Kimi Räikkönen","teamId":"enstone","driverRating":97.0},{"name":"Lewis Hamilton","teamId":"mclaren","driverRating":96.5},{"name":"Jenson Button","teamId":"mclaren","driverRating":95.9},{"name":"Mark Webber","teamId":"redbull","driverRating":90.4},{"name":"Felipe Massa","teamId":"ferrari","driverRating":87.1},{"name":"Romain Grosjean","teamId":"enstone","driverRating":87.0},{"name":"Nico Rosberg","teamId":"mercedes","driverRating":94.0},{"name":"Sergio Perez","teamId":"sauber","driverRating":93.5},{"name":"Nico Hulkenberg","teamId":"silverstone","driverRating":93.0},{"name":"Kamui Kobayashi","teamId":"sauber","driverRating":91.2},{"name":"Michael Schumacher","teamId":"mercedes","driverRating":85.4},{"name":"Paul di Resta","teamId":"silverstone","driverRating":88.2},{"name":"Pastor Maldonado","teamId":"williams","driverRating":92.0},{"name":"Bruno Senna","teamId":"williams","driverRating":87.6},{"name":"Jean-Eric Vergne","teamId":"faenza","driverRating":92.0},{"name":"Daniel Ricciardo","teamId":"faenza","driverRating":86.8},{"name":"Vitaly Petrov","teamId":"caterham","driverRating":85.0},{"name":"Timo Glock","teamId":"manor","driverRating":85.0},{"name":"Charles Pic","teamId":"manor","driverRating":85.0},{"name":"Heikki Kovalainen","teamId":"caterham","driverRating":85.0},{"name":"Jerome d'Ambrosio","teamId":"enstone","driverRating":78.0},{"name":"Narain Karthikeyan","teamId":"hrt","driverRating":85.0},{"name":"Pedro de la Rosa","teamId":"hrt","driverRating":85.0}]},"2013":{"cars":{"redbull":100.0,"mercedes":91.1,"ferrari":90.8,"enstone":89.1,"mclaren":78.1,"silverstone":74.4,"sauber":72.4,"faenza":69.4,"williams":63.6,"manor":60.0,"caterham":60.0},"drivers":[{"name":"Sebastian Vettel","teamId":"redbull","driverRating":98},{"name":"Fernando Alonso","teamId":"ferrari","driverRating":97.5},{"name":"Mark Webber","teamId":"redbull","driverRating":90.0},{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":96.5},{"name":"Kimi Räikkönen","teamId":"enstone","driverRating":96.0},{"name":"Nico Rosberg","teamId":"mercedes","driverRating":94.2},{"name":"Romain Grosjean","teamId":"enstone","driverRating":91.1},{"name":"Felipe Massa","teamId":"ferrari","driverRating":87.0},{"name":"Jenson Button","teamId":"mclaren","driverRating":94.0},{"name":"Nico Hulkenberg","teamId":"sauber","driverRating":93.5},{"name":"Sergio Perez","teamId":"mclaren","driverRating":88.4},{"name":"Paul di Resta","teamId":"silverstone","driverRating":92.5},{"name":"Adrian Sutil","teamId":"silverstone","driverRating":86.5},{"name":"Daniel Ricciardo","teamId":"faenza","driverRating":92.0},{"name":"Jean-Eric Vergne","teamId":"faenza","driverRating":87.1},{"name":"Esteban Gutierrez ","teamId":"sauber","driverRating":79.6},{"name":"Valtteri Bottas","teamId":"williams","driverRating":92.0},{"name":"Pastor Maldonado","teamId":"williams","driverRating":81.5},{"name":"Jules Bianchi","teamId":"manor","driverRating":85.0},{"name":"Charles Pic","teamId":"caterham","driverRating":85.0},{"name":"Heikki Kovalainen","teamId":"enstone","driverRating":78.0},{"name":"Giedo van der Garde","teamId":"caterham","driverRating":85.0},{"name":"Max Chilton","teamId":"manor","driverRating":85.0}]},"2014":{"cars":{"mercedes":100.0,"redbull":90.4,"williams":87.1,"ferrari":82.2,"mclaren":80.3,"silverstone":78.8,"faenza":68.3,"enstone":64.8,"manor":62.1,"sauber":60.0,"caterham":60.0},"drivers":[{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":98},{"name":"Nico Rosberg","teamId":"mercedes","driverRating":95.1},{"name":"Daniel Ricciardo","teamId":"redbull","driverRating":97.0},{"name":"Valtteri Bottas","teamId":"williams","driverRating":96.5},{"name":"Sebastian Vettel","teamId":"redbull","driverRating":91.8},{"name":"Fernando Alonso","teamId":"ferrari","driverRating":95.5},{"name":"Felipe Massa","teamId":"williams","driverRating":91.1},{"name":"Jenson Button","teamId":"mclaren","driverRating":94.5},{"name":"Nico Hulkenberg","teamId":"silverstone","driverRating":94.0},{"name":"Sergio Perez","teamId":"silverstone","driverRating":88.1},{"name":"Kevin Magnussen","teamId":"mclaren","driverRating":85.1},{"name":"Kimi Räikkönen","teamId":"ferrari","driverRating":83.3},{"name":"Jean-Eric Vergne","teamId":"faenza","driverRating":92.0},{"name":"Romain Grosjean","teamId":"enstone","driverRating":92.0},{"name":"Daniil Kvyat","teamId":"faenza","driverRating":83.1},{"name":"Pastor Maldonado","teamId":"enstone","driverRating":81.5},{"name":"Jules Bianchi","teamId":"manor","driverRating":92.0},{"name":"Adrian Sutil","teamId":"sauber","driverRating":85.0},{"name":"Marcus Ericsson","teamId":"caterham","driverRating":85.0},{"name":"Esteban Gutierrez ","teamId":"sauber","driverRating":85.0},{"name":"Max Chilton","teamId":"manor","driverRating":78.0},{"name":"Kamui Kobayashi","teamId":"caterham","driverRating":85.0},{"name":"Will Stevens","teamId":"caterham","driverRating":85.0}]},"2015":{"cars":{"mercedes":100.0,"ferrari":91.2,"williams":84.2,"redbull":80.7,"silverstone":77.6,"enstone":73.3,"faenza":72.4,"sauber":69.0,"mclaren":67.9,"manor":60.0},"drivers":[{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":98},{"name":"Nico Rosberg","teamId":"mercedes","driverRating":95.3},{"name":"Sebastian Vettel","teamId":"ferrari","driverRating":97.0},{"name":"Kimi Räikkönen","teamId":"ferrari","driverRating":90.1},{"name":"Valtteri Bottas","teamId":"williams","driverRating":96.0},{"name":"Felipe Massa","teamId":"williams","driverRating":94.0},{"name":"Daniil Kvyat","teamId":"redbull","driverRating":95.0},{"name":"Daniel Ricciardo","teamId":"redbull","driverRating":94.1},{"name":"Sergio Perez","teamId":"silverstone","driverRating":94.0},{"name":"Nico Hulkenberg","teamId":"silverstone","driverRating":89.9},{"name":"Romain Grosjean","teamId":"enstone","driverRating":93.0},{"name":"Max Verstappen","teamId":"faenza","driverRating":92.5},{"name":"Felipe Nasr","teamId":"sauber","driverRating":92.0},{"name":"Pastor Maldonado","teamId":"enstone","driverRating":85.4},{"name":"Carlos Sainz","teamId":"faenza","driverRating":83.1},{"name":"Jenson Button","teamId":"mclaren","driverRating":92.0},{"name":"Fernando Alonso","teamId":"mclaren","driverRating":87.6},{"name":"Marcus Ericsson","teamId":"sauber","driverRating":82.7},{"name":"Roberto Merhi","teamId":"manor","driverRating":85.0},{"name":"Alexander Rossi","teamId":"manor","driverRating":85.0},{"name":"Will Stevens","teamId":"manor","driverRating":85.0}]},"2016":{"cars":{"mercedes":100.0,"redbull":91.3,"ferrari":88.9,"silverstone":79.1,"williams":77.0,"mclaren":72.6,"faenza":71.5,"haas":67.8,"enstone":64.1,"sauber":62.0,"manor":61.5},"drivers":[{"name":"Nico Rosberg","teamId":"mercedes","driverRating":98},{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":97.3},{"name":"Daniel Ricciardo","teamId":"redbull","driverRating":97.0},{"name":"Sebastian Vettel","teamId":"ferrari","driverRating":96.5},{"name":"Max Verstappen","teamId":"redbull","driverRating":93.2},{"name":"Kimi Räikkönen","teamId":"ferrari","driverRating":93.8},{"name":"Sergio Perez","teamId":"silverstone","driverRating":95.0},{"name":"Valtteri Bottas","teamId":"williams","driverRating":94.5},{"name":"Nico Hulkenberg","teamId":"silverstone","driverRating":90.0},{"name":"Fernando Alonso","teamId":"mclaren","driverRating":93.5},{"name":"Felipe Massa","teamId":"williams","driverRating":87.7},{"name":"Carlos Sainz","teamId":"faenza","driverRating":92.5},{"name":"Romain Grosjean","teamId":"haas","driverRating":92.0},{"name":"Daniil Kvyat","teamId":"faenza","driverRating":85.6},{"name":"Jenson Button","teamId":"mclaren","driverRating":83.4},{"name":"Kevin Magnussen","teamId":"enstone","driverRating":92.0},{"name":"Felipe Nasr","teamId":"sauber","driverRating":92.0},{"name":"Jolyon Palmer","teamId":"enstone","driverRating":80.0},{"name":"Pascal Wehrlein","teamId":"manor","driverRating":92.0},{"name":"Stoffel Vandoorne","teamId":"mclaren","driverRating":78.3},{"name":"Esteban Gutierrez ","teamId":"haas","driverRating":78.0},{"name":"Marcus Ericsson","teamId":"sauber","driverRating":78.0},{"name":"Esteban Ocon","teamId":"manor","driverRating":78.0},{"name":"Rio Haryanto","teamId":"manor","driverRating":78.0}]},"2017":{"cars":{"mercedes":100.0,"ferrari":95.3,"redbull":89.7,"silverstone":81.2,"williams":74.1,"enstone":71.7,"faenza":71.3,"haas":70.6,"mclaren":68.5,"sauber":63.5},"drivers":[{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":98},{"name":"Sebastian Vettel","teamId":"ferrari","driverRating":97.5},{"name":"Valtteri Bottas","teamId":"mercedes","driverRating":94.8},{"name":"Kimi Räikkönen","teamId":"ferrari","driverRating":91.6},{"name":"Daniel Ricciardo","teamId":"redbull","driverRating":96.0},{"name":"Max Verstappen","teamId":"redbull","driverRating":93.3},{"name":"Sergio Perez","teamId":"silverstone","driverRating":95.0},{"name":"Esteban Ocon","teamId":"silverstone","driverRating":92.7},{"name":"Carlos Sainz","teamId":"enstone","driverRating":94.0},{"name":"Nico Hulkenberg","teamId":"enstone","driverRating":90.6},{"name":"Felipe Massa","teamId":"williams","driverRating":93.0},{"name":"Lance Stroll","teamId":"williams","driverRating":91.5},{"name":"Romain Grosjean","teamId":"haas","driverRating":92.0},{"name":"Kevin Magnussen","teamId":"haas","driverRating":87.5},{"name":"Fernando Alonso","teamId":"mclaren","driverRating":92.0},{"name":"Stoffel Vandoorne","teamId":"mclaren","driverRating":88.7},{"name":"Jolyon Palmer","teamId":"enstone","driverRating":80.1},{"name":"Pascal Wehrlein","teamId":"sauber","driverRating":92.0},{"name":"Daniil Kvyat","teamId":"faenza","driverRating":92.0},{"name":"Marcus Ericsson","teamId":"sauber","driverRating":78.0},{"name":"Pierre Gasly","teamId":"faenza","driverRating":78.0},{"name":"Antonio Giovinazzi","teamId":"sauber","driverRating":78.0},{"name":"Brendon Hartley","teamId":"faenza","driverRating":78.0}]},"2018":{"cars":{"mercedes":100.0,"ferrari":97.4,"redbull":92.0,"enstone":77.2,"haas":75.1,"mclaren":72.3,"silverstone":71.3,"sauber":70.8,"faenza":68.9,"williams":64.1},"drivers":[{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":98},{"name":"Sebastian Vettel","teamId":"ferrari","driverRating":97.5},{"name":"Kimi Räikkönen","teamId":"ferrari","driverRating":94.0},{"name":"Max Verstappen","teamId":"redbull","driverRating":96.5},{"name":"Valtteri Bottas","teamId":"mercedes","driverRating":90.5},{"name":"Daniel Ricciardo","teamId":"redbull","driverRating":91.1},{"name":"Nico Hulkenberg","teamId":"enstone","driverRating":95.0},{"name":"Sergio Perez","teamId":"silverstone","driverRating":94.5},{"name":"Kevin Magnussen","teamId":"haas","driverRating":94.0},{"name":"Carlos Sainz","teamId":"enstone","driverRating":90.3},{"name":"Fernando Alonso","teamId":"mclaren","driverRating":93.0},{"name":"Esteban Ocon","teamId":"silverstone","driverRating":89.6},{"name":"Charles Leclerc","teamId":"sauber","driverRating":92.0},{"name":"Romain Grosjean","teamId":"haas","driverRating":87.2},{"name":"Pierre Gasly","teamId":"faenza","driverRating":92.0},{"name":"Stoffel Vandoorne","teamId":"mclaren","driverRating":81.4},{"name":"Marcus Ericsson","teamId":"sauber","driverRating":81.2},{"name":"Lance Stroll","teamId":"williams","driverRating":92.0},{"name":"Brendon Hartley","teamId":"faenza","driverRating":79.9},{"name":"Sergey Sirotkin","teamId":"williams","driverRating":80.3}]},"2019":{"cars":{"mercedes":100.0,"ferrari":93.0,"redbull":90.0,"mclaren":77.7,"enstone":74.0,"faenza":73.6,"silverstone":72.6,"sauber":71.1,"haas":67.8,"williams":61.5},"drivers":[{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":98},{"name":"Valtteri Bottas","teamId":"mercedes","driverRating":94.6},{"name":"Max Verstappen","teamId":"redbull","driverRating":97.0},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":96.5},{"name":"Sebastian Vettel","teamId":"ferrari","driverRating":94.7},{"name":"Carlos Sainz","teamId":"mclaren","driverRating":95.5},{"name":"Pierre Gasly","teamId":"faenza","driverRating":95.0},{"name":"Alexander Albon","teamId":"redbull","driverRating":85.1},{"name":"Daniel Ricciardo","teamId":"enstone","driverRating":94.0},{"name":"Sergio Perez","teamId":"silverstone","driverRating":93.5},{"name":"Lando Norris","teamId":"mclaren","driverRating":86.1},{"name":"Kimi Räikkönen","teamId":"sauber","driverRating":92.5},{"name":"Daniil Kvyat","teamId":"faenza","driverRating":83.5},{"name":"Nico Hulkenberg","teamId":"enstone","driverRating":87.6},{"name":"Lance Stroll","teamId":"silverstone","driverRating":83.7},{"name":"Kevin Magnussen","teamId":"haas","driverRating":92.0},{"name":"Antonio Giovinazzi","teamId":"sauber","driverRating":82.6},{"name":"Romain Grosjean","teamId":"haas","driverRating":83.6},{"name":"Robert Kubica","teamId":"williams","driverRating":92.0},{"name":"George Russell","teamId":"williams","driverRating":78.0}]},"2020":{"cars":{"mercedes":100.0,"redbull":89.8,"mclaren":83.8,"silverstone":83.3,"enstone":82.5,"ferrari":79.1,"faenza":77.3,"sauber":64.7,"haas":62.9,"williams":60.0},"drivers":[{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":98},{"name":"Valtteri Bottas","teamId":"mercedes","driverRating":92.5},{"name":"Max Verstappen","teamId":"redbull","driverRating":97.0},{"name":"Sergio Perez","teamId":"silverstone","driverRating":96.5},{"name":"Daniel Ricciardo","teamId":"enstone","driverRating":96.0},{"name":"Carlos Sainz","teamId":"mclaren","driverRating":95.5},{"name":"Alexander Albon","teamId":"redbull","driverRating":87.9},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":94.5},{"name":"Lando Norris","teamId":"mclaren","driverRating":92.9},{"name":"Pierre Gasly","teamId":"faenza","driverRating":93.5},{"name":"Lance Stroll","teamId":"silverstone","driverRating":87.4},{"name":"Esteban Ocon","teamId":"enstone","driverRating":85.8},{"name":"Sebastian Vettel","teamId":"ferrari","driverRating":82.7},{"name":"Daniil Kvyat","teamId":"faenza","driverRating":84.0},{"name":"Nico Hulkenberg","teamId":"silverstone","driverRating":79.1},{"name":"Kimi Räikkönen","teamId":"sauber","driverRating":92.0},{"name":"Antonio Giovinazzi","teamId":"sauber","driverRating":92.0},{"name":"George Russell","teamId":"williams","driverRating":92.0},{"name":"Romain Grosjean","teamId":"haas","driverRating":92.0},{"name":"Kevin Magnussen","teamId":"haas","driverRating":85.0},{"name":"Nicholas Latifi","teamId":"williams","driverRating":78.0},{"name":"Jack Aitken","teamId":"williams","driverRating":78.0},{"name":"Pietro Fittipaldi","teamId":"haas","driverRating":78.0}]},"2021":{"cars":{"mercedes":100.0,"redbull":99.1,"ferrari":89.0,"mclaren":86.8,"enstone":80.1,"faenza":79.3,"silverstone":74.2,"williams":67.7,"sauber":65.8,"haas":60.0},"drivers":[{"name":"Max Verstappen","teamId":"redbull","driverRating":98},{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":97.5},{"name":"Valtteri Bottas","teamId":"mercedes","driverRating":91.2},{"name":"Sergio Perez","teamId":"redbull","driverRating":89.2},{"name":"Carlos Sainz","teamId":"ferrari","driverRating":96.0},{"name":"Lando Norris","teamId":"mclaren","driverRating":95.5},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":94.5},{"name":"Daniel Ricciardo","teamId":"mclaren","driverRating":90.6},{"name":"Pierre Gasly","teamId":"faenza","driverRating":94.0},{"name":"Fernando Alonso","teamId":"enstone","driverRating":93.5},{"name":"Esteban Ocon","teamId":"enstone","driverRating":91.8},{"name":"Sebastian Vettel","teamId":"silverstone","driverRating":92.5},{"name":"Lance Stroll","teamId":"silverstone","driverRating":89.1},{"name":"Yuki Tsunoda","teamId":"faenza","driverRating":82.1},{"name":"George Russell","teamId":"williams","driverRating":92.0},{"name":"Kimi Räikkönen","teamId":"sauber","driverRating":92.0},{"name":"Nicholas Latifi","teamId":"williams","driverRating":84.1},{"name":"Antonio Giovinazzi","teamId":"sauber","driverRating":82.2},{"name":"Mick Schumacher","teamId":"haas","driverRating":85.0},{"name":"Robert Kubica","teamId":"sauber","driverRating":78.0},{"name":"Nikita Mazepin","teamId":"haas","driverRating":85.0}]},"2022":{"cars":{"redbull":100.0,"ferrari":94.2,"mercedes":92.9,"enstone":79.1,"mclaren":78.3,"sauber":70.8,"silverstone":70.8,"haas":68.8,"faenza":68.6,"williams":64.1},"drivers":[{"name":"Max Verstappen","teamId":"redbull","driverRating":98},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":97.5},{"name":"Sergio Perez","teamId":"redbull","driverRating":92.4},{"name":"George Russell","teamId":"mercedes","driverRating":96.5},{"name":"Carlos Sainz","teamId":"ferrari","driverRating":93.2},{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":93.7},{"name":"Lando Norris","teamId":"mclaren","driverRating":95.0},{"name":"Esteban Ocon","teamId":"enstone","driverRating":94.5},{"name":"Fernando Alonso","teamId":"enstone","driverRating":92.3},{"name":"Valtteri Bottas","teamId":"sauber","driverRating":93.5},{"name":"Daniel Ricciardo","teamId":"mclaren","driverRating":83.2},{"name":"Sebastian Vettel","teamId":"silverstone","driverRating":92.5},{"name":"Kevin Magnussen","teamId":"haas","driverRating":92.0},{"name":"Pierre Gasly","teamId":"faenza","driverRating":92.0},{"name":"Lance Stroll","teamId":"silverstone","driverRating":84.8},{"name":"Mick Schumacher","teamId":"haas","driverRating":84.7},{"name":"Yuki Tsunoda","teamId":"faenza","driverRating":85.3},{"name":"Zhou Guanyu","teamId":"sauber","driverRating":79.7},{"name":"Alexander Albon","teamId":"williams","driverRating":92.0},{"name":"Nicholas Latifi","teamId":"williams","driverRating":85.0},{"name":"Nyck De Vries","teamId":"williams","driverRating":85.0},{"name":"Nico Hulkenberg","teamId":"silverstone","driverRating":78.0}]},"2023":{"cars":{"redbull":100.0,"mercedes":87.6,"ferrari":87.5,"mclaren":83.7,"silverstone":82.8,"enstone":74.9,"williams":67.2,"faenza":66.8,"sauber":65.5,"haas":64.7},"drivers":[{"name":"Max Verstappen","teamId":"redbull","driverRating":98},{"name":"Sergio Perez","teamId":"redbull","driverRating":90.4},{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":97.0},{"name":"Fernando Alonso","teamId":"silverstone","driverRating":96.5},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":96.0},{"name":"Lando Norris","teamId":"mclaren","driverRating":95.5},{"name":"Carlos Sainz","teamId":"ferrari","driverRating":94.6},{"name":"George Russell","teamId":"mercedes","driverRating":91.0},{"name":"Oscar Piastri","teamId":"mclaren","driverRating":86.6},{"name":"Lance Stroll","teamId":"silverstone","driverRating":84.5},{"name":"Pierre Gasly","teamId":"enstone","driverRating":93.0},{"name":"Esteban Ocon","teamId":"enstone","driverRating":91.6},{"name":"Alexander Albon","teamId":"williams","driverRating":92.0},{"name":"Yuki Tsunoda","teamId":"faenza","driverRating":92.0},{"name":"Valtteri Bottas","teamId":"sauber","driverRating":92.0},{"name":"Nico Hulkenberg","teamId":"haas","driverRating":92.0},{"name":"Daniel Ricciardo","teamId":"faenza","driverRating":82.9},{"name":"Zhou Guanyu","teamId":"sauber","driverRating":86.4},{"name":"Kevin Magnussen","teamId":"haas","driverRating":82.7},{"name":"Liam Lawson","teamId":"faenza","driverRating":79.6},{"name":"Logan Sargeant","teamId":"williams","driverRating":78.5},{"name":"Nyck De Vries","teamId":"faenza","driverRating":78.0}]},"2024":{"cars":{"mclaren":100.0,"ferrari":99.6,"redbull":97.6,"mercedes":93.5,"silverstone":75.1,"enstone":72.5,"haas":71.8,"faenza":70.5,"williams":66.4,"sauber":63.1},"drivers":[{"name":"Max Verstappen","teamId":"redbull","driverRating":98},{"name":"Lando Norris","teamId":"mclaren","driverRating":97.5},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":97.0},{"name":"Oscar Piastri","teamId":"mclaren","driverRating":93.4},{"name":"Carlos Sainz","teamId":"ferrari","driverRating":93.4},{"name":"George Russell","teamId":"mercedes","driverRating":95.5},{"name":"Lewis Hamilton","teamId":"mercedes","driverRating":93.7},{"name":"Sergio Perez","teamId":"redbull","driverRating":85.4},{"name":"Fernando Alonso","teamId":"silverstone","driverRating":94.0},{"name":"Pierre Gasly","teamId":"enstone","driverRating":93.5},{"name":"Nico Hulkenberg","teamId":"haas","driverRating":93.0},{"name":"Yuki Tsunoda","teamId":"faenza","driverRating":92.5},{"name":"Lance Stroll","teamId":"silverstone","driverRating":82.8},{"name":"Esteban Ocon","teamId":"enstone","driverRating":85.7},{"name":"Kevin Magnussen","teamId":"haas","driverRating":83.5},{"name":"Alexander Albon","teamId":"williams","driverRating":92.0},{"name":"Daniel Ricciardo","teamId":"faenza","driverRating":83.6},{"name":"Oliver Bearman","teamId":"haas","driverRating":80.4},{"name":"Franco Colapinto","teamId":"williams","driverRating":83.8},{"name":"Zhou Guanyu","teamId":"sauber","driverRating":92.0},{"name":"Liam Lawson","teamId":"faenza","driverRating":79.9},{"name":"Valtteri Bottas","teamId":"sauber","driverRating":78.0},{"name":"Logan Sargeant","teamId":"williams","driverRating":78.0},{"name":"Jack Doohan","teamId":"enstone","driverRating":78.0}]},"2025":{"cars":{"mclaren":100.0,"mercedes":90.0,"redbull":89.5,"ferrari":87.6,"williams":76.2,"faenza":73.3,"silverstone":73.1,"haas":72.3,"sauber":71.6,"enstone":66.5},"drivers":[{"name":"Lando Norris","teamId":"mclaren","driverRating":98},{"name":"Max Verstappen","teamId":"redbull","driverRating":97.5},{"name":"Oscar Piastri","teamId":"mclaren","driverRating":96.6},{"name":"George Russell","teamId":"mercedes","driverRating":96.5},{"name":"Charles Leclerc","teamId":"ferrari","driverRating":96.0},{"name":"Lewis Hamilton","teamId":"ferrari","driverRating":90.5},{"name":"Kimi Antonelli","teamId":"mercedes","driverRating":87.6},{"name":"Alexander Albon","teamId":"williams","driverRating":94.5},{"name":"Carlos Sainz","teamId":"williams","driverRating":92.3},{"name":"Fernando Alonso","teamId":"silverstone","driverRating":93.5},{"name":"Nico Hulkenberg","teamId":"sauber","driverRating":93.0},{"name":"Isack Hadjar","teamId":"faenza","driverRating":92.5},{"name":"Oliver Bearman","teamId":"haas","driverRating":92.0},{"name":"Liam Lawson","teamId":"faenza","driverRating":88.4},{"name":"Esteban Ocon","teamId":"haas","driverRating":91.0},{"name":"Lance Stroll","teamId":"silverstone","driverRating":86.2},{"name":"Yuki Tsunoda","teamId":"redbull","driverRating":79.1},{"name":"Pierre Gasly","teamId":"enstone","driverRating":92.0},{"name":"Gabriel Bortoleto","teamId":"sauber","driverRating":83.2},{"name":"Franco Colapinto","teamId":"enstone","driverRating":78.0},{"name":"Jack Doohan","teamId":"enstone","driverRating":78.0}]}};
+function f1CarRating(team,year=state.year){
+ const id=team?.id||historicalF1Teams(year).find(t=>t.name===team?.name)?.id;
+ if(year<=2025)return F1_SEASON_DATA[year]?.cars[id]??45;
+ const base={...F1_SEASON_DATA[2025].cars,sauber:58,cadillac:52}[id]??45;
+ // Deterministic projected seasons: progress is neither automatic nor monotonic.
+ let rating=base;
+ const hash=(id||'').split('').reduce((n,c)=>n+c.charCodeAt(0),0);
+ for(let y=2027;y<=year;y++){
+  const wave=Math.sin(y*1.73+hash)*5+Math.cos(y*.61+hash*.3)*3;
+  const catchup=(75-rating)*.06;
+  rating=clamp(rating+wave+catchup,45,100);
+ }
+ return Math.round(rating*10)/10;
+}
+function combinedRaceStrength(driver,car,project=0,preparation=60,lead=false,adaptation=0){
+ return clamp(driver*.45+car*.55+project*.35+(preparation-30)/40+(lead?.4:0)-adaptation,20,99);
+}
+const rosterBeforeAnnual=seasonDrivers;
+seasonDrivers=function(category,year){
+ const roster=rosterBeforeAnnual(category,year);
+ if(category!=='f1')return roster;
+ const historical=F1_SEASON_DATA[year]?.drivers;
+ const capacities=new Map(historicalF1Teams(year).map(t=>[t.id,0]));
+ const last=F1_SEASON_DATA[2025].drivers;
+ return roster.map((r,i)=>{
+  const source=(historical||last).find(d=>driverKey(d.name)===driverKey(r.name));
+  let teamId=year===2017&&driverKey(r.name)===driverKey('Carlos Sainz')?'faenza':source?.teamId;
+  if(!capacities.has(teamId)||(year>=2026&&capacities.get(teamId)>=2))teamId=[...capacities].find(([,n])=>n<2)?.[0]||'sauber';
+  capacities.set(teamId,capacities.get(teamId)+1);
+  const driverRating=historical?(source?.driverRating??80):r.strength;
+  const project=typeof state!=='undefined'?state?.careerSystems?.projects?.['f1:'+teamId]||0:0;
+  return {...r,teamId,driverRating,strength:combinedRaceStrength(driverRating,f1CarRating({id:teamId},year),project),projected:year>=2026};
+ });
+};
+
+/* Mercado e metas calibrados em simulacoes isoladas. */
+const baseOffers=generateOffers,baseApply=applyCareerChoice,baseTeams=categoryTeams;
+applyCareerChoice=function(ev,o,ok,delta){
+ baseApply(ev,o,ok,delta);
+ if(state.category==='f3'&&o.raceStyle==='attack'&&ok)state.f3AttackSuccesses=(state.f3AttackSuccesses||0)+1;
+};
+generateOffers=function(category,bias){
+ if(category!=='f1'||state.yearHistory.some(y=>y.category==='f1'))return baseOffers(category,bias);
+ if(!state.debutMarket){
+  const junior=state.yearHistory.filter(y=>y.category==='f3');
+  const eligible=(state.f3AttackSuccesses||0)>=2&&state.ovr>=80&&junior.some(y=>y.position<=3&&y.wins>=2);
+  const roll=Math.random();
+  const tier=eligible&&roll<.02?'exception':roll<.20?'intermediate':'low';
+  state.debutMarket={eligible,tier};
+ }
+ const all=baseTeams('f1').sort((a,b)=>f1CarRating(a)-f1CarRating(b));
+ // Classify by current strength, never offer extinct teams.
+ const tier=state.debutMarket.tier;
+ const pool=tier==='exception'?all.filter(t=>f1TeamStars(t)>=4):tier==='low'?all.slice(0,3):all.filter(t=>f1TeamStars(t)<=3).slice(3,6);
+ const selected=pool.length?pool:all.slice(0,3);
+ const prevTeams=categoryTeams,prevElite=eliteSeatEligible;
+ categoryTeams=(cat,year=state.year)=>cat==='f1'?selected:baseTeams(cat,year);
+ if(tier==='exception')eliteSeatEligible=()=>true;
+ let offers;
+ try{offers=baseOffers(category,bias);}finally{categoryTeams=prevTeams;eliteSeatEligible=prevElite;}
+ offers=offers.map(o=>({...o,role:tier==='exception'?'test':'second',raceEstimate:tier==='exception'?8:seasonRaceCount('f1')}));
+ state.debutMarket.offered=offers.map(o=>({team:o.name,rating:f1CarRating(o),role:o.role}));
+
+
+ return offers;
+};
+
+const previousOffers=generateOffers,previousPromotion=maybePromote;
+function expectedFinish(y){
+ const teams=baseTeams('f1',y.year),rating=y.carRating||60;
+ return clamp(1+2*teams.filter(t=>f1CarRating(t,y.year)>rating+1).length,3,teams.length*2);
+}
+function recentF1(){return state.yearHistory.filter(y=>y.category==='f1').slice(-3);}
+eliteSeatEligible=function(){
+ const years=recentF1(),c=careerSystems();
+ return state.ovr>=87&&c.trust>=60&&c.preparation>=50&&(years.some(y=>y.position<=3&&y.podiums>=2)||years.some(y=>y.position<=5&&y.podiums>=2&&y.position<=expectedFinish(y)-3)||years.filter(y=>y.position<=8&&y.podiums>=1&&y.position<=expectedFinish(y)-2).length>=2);
+};
+generateOffers=function(category,bias){
+ let offers=previousOffers(category,bias);
+ if(category!=='f1'||!state.yearHistory.some(y=>y.category==='f1')||eliteSeatEligible())return offers;
+ const last=recentF1().at(-1);
+ const canRise=recentF1().some(y=>y.position<=12&&y.position<=expectedFinish(y)-2);
+ const ceiling=(last?.carRating||60)+(canRise?(recentHighlights().length>=1?15:10):3);
+ offers=offers.filter(o=>f1CarRating(o)<=ceiling);
+ if(!offers.length){
+  const t=baseTeams('f1').filter(t=>f1CarRating(t)<=ceiling&&f1TeamStars(t)<=3).sort((a,b)=>f1CarRating(b)-f1CarRating(a))[0]||baseTeams('f1').sort((a,b)=>f1CarRating(a)-f1CarRating(b))[0];
+  offers=[{...t,category:'f1',stars:f1TeamStars(t),role:'second',weekly:Math.max(2,state.salaryWeek),years:1,raceEstimate:seasonRaceCount('f1')}];
+ }
+ return offers;
+};
+maybePromote=function(){
+ if(state.category==='f1'&&state.age-state.team.ageStart>=state.team.years){
+  const years=recentF1();
+  // Retention is distinct from promotion: no penalty for merely staying in midfield.
+  const under=years.length===3&&years.every(y=>y.position>expectedFinish(y)+4);
+  const declining=years.length===3&&state.age>=35&&state.ovr<78&&years.every(y=>y.position>=16);
+  const exitChance=under?.15:declining?.10:0;
+  if(exitChance>0&&Math.random()<exitChance){
+   const dest=pick(['indycar','stockcar','veterano']);
+   (state.marketExits||=[]).push({year:state.year,category:dest,reason:under?'sustained-underperformance':'decline'});return dest;
+  }
+ }
+ if(['indycar','stockcar','veterano'].includes(state.category)){
+  const recent=state.yearHistory.filter(y=>y.category===state.category).slice(-2);
+  if(state.age<=34&&state.ovr>=88&&recent.length===2&&recent.every(y=>y.position<=3)&&recent.some(y=>y.position===1)&&Math.random()<.05){
+   state.marketReturns=(state.marketReturns||0)+1;return 'f1';
+  }
+ }
+ return previousPromotion();
+};
+
+const priorRetirement=retirementReason;
+retirementReason=function(){
+ const existing=priorRetirement();if(existing)return existing;
+ if(state.age<24||!['indycar','stockcar','veterano','nascar'].includes(state.category))return null;
+ const recent=state.yearHistory.slice(-3);
+ if(recent.length!==3||recent.some(y=>y.category!==state.category))return null;
+ const poor=recent.every(y=>{const field=seasonDrivers(y.category,y.year).length+1;return y.position>Math.ceil(field*.6)&&y.podiums===0;});
+ const marketScore=state.ovr+careerSystems().trust*.1-18-Math.max(0,state.age-32)*.8;
+ if(poor&&marketScore<65){state.earlyMarketRetirement=true;return 'Sem propostas viáveis após três temporadas ruins fora da F1.';}
+ return null;
+};
+
+const oldPlace=placeTargetRace,oldStart=startCareerSeason,oldEnd=endCareerSeason,oldElite=eliteSeatEligible;
+function recentHighlights(){return (state.highlights||[]).filter(h=>h.category==='f1'&&h.year>=state.year-3);}
+placeTargetRace=function(field,participates){
+ state.lastHighlight=null;
+ const p=state.pendingRaceTarget?{...state.pendingRaceTarget}:null;
+ const expected=1+state.standings.filter(d=>d.strength>raceAbility()).length;
+ const retired=oldPlace(field,participates);
+ if(p&&state.pendingRaceTarget===null&&participates&&p.style==='attack'&&p.success&&!retired){
+  const pos=field.findIndex(d=>d.me)+1;
+  if(pos<=8&&pos<=expected-3){state.lastHighlight={year:state.year,category:state.category,pos,expected};(state.highlights||=[]).push(state.lastHighlight);}
+ }
+ return retired;
+};
+startCareerSeason=function(){
+ oldStart();
+ if(state.category!=='f1')return;
+ const c=careerSystems(),expected=expectedFinish({year:state.year,carRating:f1CarRating(state.team)});
+ c.objective=state.team.role==='test'?{label:'Marcar ao menos 1 ponto nas participações',kind:'points',target:1}:{label:`Terminar entre os ${Math.min(state.standings.length+1,expected+2)} primeiros`,kind:'position',target:Math.min(state.standings.length+1,expected+2)};
+};
+endCareerSeason=function(position){
+ if(careerSystems().lastEnd===state.year)return;
+ oldEnd(position);
+ if(state.category!=='f1')return;
+ const c=careerSystems(),challenge=(state.highlights||[]).some(h=>h.category==='f1'&&h.year===state.year);
+ const expected=expectedFinish({year:state.year,carRating:f1CarRating(state.team)});
+ const severe=state.team.role!=='test'&&position>expected+4;
+ state.severeGoalStreak=severe?(state.severeGoalStreak||0)+1:0;
+ // No duplicate OVR penalty: objective costs affect contract confidence.
+ c.trust=clamp(c.trust+(challenge?2:0)-(state.severeGoalStreak>=2?3:0),0,100);
+ (state.goalAudit||=[]).push({year:state.year,met:c.lastObjective,challenge,severe});
+};
+eliteSeatEligible=function(){
+ const years=recentF1();
+ const consistent=years.filter(y=>y.position<=8&&y.podiums>=1&&y.position<=expectedFinish(y)-2).length>=2;
+ return oldElite()&&(recentHighlights().length>=1||consistent||years.some(y=>y.position<=3));
+};
+
+
+
+function renderMarketStatus(){
+ if(state.category!=='f1')return state.marketExits?.at(-1)?.year===state.year?'<section class="career-status"><h4>Uma nova etapa</h4><p>As últimas temporadas reduziram o interesse da F1. Uma nova categoria pode reabrir sua carreira.</p></section>':'';
+ const c=careerSystems(),years=recentF1(),missing=[];
+ if(state.ovr<87)missing.push('OVR 87');
+ if(c.trust<60)missing.push('confiança 60');
+ if(c.preparation<50)missing.push('preparo 50');
+ const elite=eliteSeatEligible();
+ const text=elite?'Seu desempenho permite receber propostas de equipes de ponta. A oferta depende das oportunidades do mercado.':missing.length?`Para disputar vagas de ponta, falta alcançar ${missing.join(', ')} e comprovar resultados acima do esperado.`:'As equipes de ponta ainda esperam resultados de destaque ou temporadas consistentes acima do potencial do carro.';
+ const bad=years.slice(-2);
+ const warning=bad.length===2&&bad.every(y=>y.position>expectedFinish(y)+4);
+ return `<section class="career-status"><h4>Olhar do mercado</h4><p>${text}</p>${warning?'<p><b>Sua vaga merece atenção:</b> duas temporadas muito abaixo da expectativa. Persistir nessa fase pode deixar você sem vaga na F1 ao fim do contrato.</p>':''}${state.marketExits?.at(-1)?.year===state.year?'<p>As últimas temporadas reduziram o interesse da F1. Uma nova categoria pode reabrir sua carreira.</p>':''}</section>`;
 }
 
 /* ---------------- Boot ---------------- */
